@@ -1,4 +1,4 @@
-# Omnissiah++ R03: self-hosting bootstrap + core AST
+# Omnissiah++ R04: structural-AST self-hosting + restricted Core AST
 
 The native compiler lives in [`omnissiah_selfhost.omn`](omnissiah_selfhost.omn):
 **source code written in Omnissiah++** (with ordinary C++20 syntax where the
@@ -20,14 +20,14 @@ build/bootstrap/omnic-stage3 build examples/memory.omn -o build/relic
 build/relic
 ```
 
-The seven bootstrap checks:
+The eight bootstrap phases:
 
 1. **Stage 0**: Python R01 transpiles `omnissiah_selfhost.omn`, C++ compiler
    compiles the result as `omnic-stage1`.
-2. **Stage 1**: `omnic-stage1` (native binary) compiles the same `.omn` file as
+2. **Stage 1**: `omnic-stage1` (native binary) runs **`source-build` through the structural tree** on the same `.omn` file as
    `omnic-stage2` and saves the generated C++.
-3. **Stage 2**: `omnic-stage2` compiles that `.omn` into `omnic-stage3`.
-4. **Stage 3**: `omnic-stage3` emits another copy of the C++.
+3. **Stage 2**: `omnic-stage2` uses **`source-build`** to compile that `.omn` into `omnic-stage3`.
+4. **Stage 3**: `omnic-stage3` uses **`source-emit`** to emit another copy of the C++.
 5. Verify byte-identical stage 2, stage 3 and stage 4 C++ output and equivalence
    with stage 0 Python output. A digest is printed for the stable translation.
 6. Compile/run original `.omn` examples using stage 3. The test suite also runs
@@ -51,6 +51,27 @@ The native `check` / `emit` commands can run on other platforms where the binary
 has been built. The native `build` and `run` commands use POSIX process spawning,
 and have been tested on Linux; Windows native compilation is not yet supported.
 
+## R04 complete-source structural tree
+
+The `SourceParser` and `SourceNode` are compiled from
+`omnissiah_selfhost.omn` itself. Every token, comment, string and directive is
+retained, with byte-level offsets and balanced grouping for `()`, `[]`, `{}`.
+The structural emitter rebuilds source from the tree, checks that bytes match,
+and then applies the canonical ritual-validation/token-replacement edits.
+
+```sh
+build/bootstrap/omnic-stage3 source-ast bootstrap/omnissiah_selfhost.omn -o build/own-ast.json
+build/bootstrap/omnic-stage3 source-emit bootstrap/omnissiah_selfhost.omn -o build/compiler.cpp
+build/bootstrap/omnic-stage3 source-build examples/hello.omn -o build/hello
+build/hello
+```
+
+The new structural tree parses the complete compiler source **without any
+Python parser**. It does **not** implement C++ grammar/type semantics; GCC or
+Clang remains the back end, and token rewriting remains the transformation
+engine. A dedicated, restricted grammar AST is available under `ast`/`core-*`.
+This distinction is intentional, not a claim of a complete C++ compiler.
+
 ## R03 native syntax frontend
 
 `CoreParser` builds a tree of `ASTNode` nodes from native lexer tokens. Nodes
@@ -70,10 +91,9 @@ POSIX process runner still have the documented roles.
 
 ## Roadmap
 
-- R04: expand Core to the native compiler's own source grammar, separate
-  parser, semantic analysis and backend into stable units, add source spans,
-  differential fuzzing and richer type checks.
-- R05: make the **AST backend** itself self-host (stage 1 -> 2 -> 3 via Core)
-  with reproducible output; test GCC and Clang and full compiler fixtures.
+- R05: grammar-aware declaration/statement nodes over the lossless structural
+  tree; preserve exact round trips, expand source spans and test coverage.
+- R06: gradually unify strict Core AST with structural AST and move Omnissiah++
+  transformation rules into typed AST passes, then test bootstrap stability.
 - Later: optional LLVM or independent machine-code backend. Removing the C++
   toolchain dependency is a much larger project than frontend self-hosting.

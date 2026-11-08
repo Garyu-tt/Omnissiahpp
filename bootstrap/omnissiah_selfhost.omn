@@ -1,4 +1,4 @@
-// Omnissiah++ R02: native self-hosting transpiler.
+// Omnissiah++ R04: self-hosted structural AST, core AST and native compiler.
 // Stage 0: Python R01 builds this source once.
 // Stage 1+: this executable translates this same .omn source without Python.
 #include <algorithm>
@@ -254,7 +254,7 @@ string masked(const string& src) {
     ВЕРНУТЬ masked_text;
 }
 
-string transpile(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
+std::vector<Edit> analyze_edits(const string& source, ЛОГИКА dark_age = ЛОЖЬ) {
     if (source.find('\0') != string::npos) throw Heresy("OMN043", "NUL в исходном файле");
     verify_utf8(source);
     const auto tokens = lex(source);
@@ -323,15 +323,26 @@ string transpile(const string& source, const string& filename, ЛОГИКА dark
         if (!invoked) throw Heresy("OMN001", "отсутствует ВО_ИМЯ_ОМНИССИИ;");
         if (!ended) throw Heresy("OMN019", "отсутствует ДА_БУДЕТ_ВОЛЯ_МАШИНЫ;");
     }
-    string translated = source;
-    for (auto it = edits.rbegin(); it != edits.rend(); ++it)
-        translated.replace(it->start, it->end - it->start, it->text);
+    ВЕРНУТЬ edits;
+}
+
+string wrap_cpp(const string& translated, const string& filename) {
     string escaped;
     for (char c : filename) {
         if (c == '\\' || c == '\"') escaped += '\\';
         escaped += c == '\n' ? ' ' : c;
     }
     ВЕРНУТЬ RUNTIME + "\n#line 1 \"" + escaped + "\"\n" + translated;
+}
+
+string apply_edits(string source, const std::vector<Edit>& edits) {
+    for (auto it = edits.rbegin(); it != edits.rend(); ++it)
+        source.replace(it->start, it->end - it->start, it->text);
+    ВЕРНУТЬ source;
+}
+
+string transpile(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
+    ВЕРНУТЬ wrap_cpp(apply_edits(source, analyze_edits(source, dark_age)), filename);
 }
 
 string read_file(const fs::path& path) {
@@ -879,6 +890,113 @@ string emit_core_cpp(const string& source, const string& filename) {
     ВЕРНУТЬ out;
 }
 
+// R04 lossless structural syntax tree. Unlike the restricted R03 CoreParser,
+// this frontend accepts the whole native compiler source, including templates,
+// lambdas, initializers, namespaces, conditional preprocessor directives, and
+// raw strings. It validates (), [] and {} nesting and preserves every byte.
+// It is NOT yet a full grammar/semantic parser for C++20.
+struct SourceNode {
+    string kind;
+    Token open;
+    Token close;
+    std::vector<SourceNode> children;
+};
+
+class SourceParser {
+    std::vector<Token> tokens;
+    size_t pos = 0;
+    Token eof{"eof", "<eof>", 0, 0, 1, 1};
+
+    static string matching(string_view symbol) {
+        if (symbol == "(") ВЕРНУТЬ ")";
+        if (symbol == "[") ВЕРНУТЬ "]";
+        if (symbol == "{") ВЕРНУТЬ "}";
+        ВЕРНУТЬ "";
+    }
+
+    SourceNode group(const Token& begin, string_view expected, size_t depth) {
+        if (depth > 512) throw Heresy("OMN132", "слишком глубокая вложенность разделителей", begin);
+        SourceNode out{"Group", begin, begin, {}};
+        while (pos < tokens.size()) {
+            Token token = tokens[pos++];
+            if (token.value == expected && !expected.empty()) {
+                out.close = token;
+                ВЕРНУТЬ out;
+            }
+            if (token.kind == "punct" &&
+                (token.value == ")" || token.value == "]" || token.value == "}"))
+                throw Heresy("OMN131", "неожиданный закрывающий разделитель «" + token.value + "»", token);
+            string close = token.kind == "punct" ? matching(token.value) : "";
+            if (!close.empty()) out.children.push_back(group(token, close, depth + 1));
+            else out.children.push_back(SourceNode{token.kind, token, token, {}});
+        }
+        if (!expected.empty())
+            throw Heresy("OMN130", "не закрыт разделитель «" + begin.value + "», ожидалось «" + string(expected) + "»", begin);
+        out.close = eof;
+        ВЕРНУТЬ out;
+    }
+
+public:
+    explicit SourceParser(const string& source) : tokens(lex(source)) {
+        eof.start = eof.end = source.size();
+        if (!tokens.empty()) {
+            eof.line = tokens.back().line;
+            eof.column = tokens.back().column;
+        }
+    }
+    SourceNode program() {
+        ВЕРНУТЬ group(Token{"translation_unit", "", 0, 0, 1, 1}, "", 0);
+    }
+};
+
+НИЧТО append_source_text(const SourceNode& node, string& out) {
+    if (node.open.kind != "translation_unit") out += node.open.value;
+    for (const auto& child : node.children) append_source_text(child, out);
+    if (node.kind == "Group" && node.open.kind != "translation_unit") out += node.close.value;
+}
+
+НИЧТО append_source_json(const SourceNode& node, string& out) {
+    out += "{\"kind\":" + json_quote(node.open.kind == "translation_unit" ? string("TranslationUnit") : node.kind);
+    out += ",\"value\":" + json_quote(node.open.value);
+    out += ",\"start\":" + std::to_string(node.open.start);
+    size_t end = node.open.kind == "translation_unit" ? node.close.end :
+        (node.kind == "Group" ? node.close.end : node.open.end);
+    out += ",\"end\":" + std::to_string(end);
+    out += ",\"line\":" + std::to_string(node.open.line);
+    out += ",\"column\":" + std::to_string(node.open.column);
+    if (node.kind == "Group") out += ",\"close\":" + json_quote(node.close.value);
+    out += ",\"children\":[";
+    ЛОГИКА first = ИСТИНА;
+    for (const auto& child : node.children) {
+        if (!first) out += ',';
+        first = ЛОЖЬ;
+        append_source_json(child, out);
+    }
+    out += "]}";
+}
+
+string source_ast_json(const string& source) {
+    SourceParser parser(source);
+    SourceNode tree = parser.program();
+    tree.close.end = source.size();
+    string out;
+    append_source_json(tree, out);
+    ВЕРНУТЬ out + "\n";
+}
+
+string emit_source_cpp(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
+    // Keep ritual enforcement shared, but reconstruct the source from the
+    // recursive AST rather than using the original input as the output buffer.
+    const auto edits = analyze_edits(source, dark_age);
+    SourceParser parser(source);
+    SourceNode tree = parser.program();
+    string rebuilt;
+    rebuilt.reserve(source.size());
+    append_source_text(tree, rebuilt);
+    if (rebuilt != source) throw Heresy("OMN133", "структурное дерево потеряло часть исходника");
+    ВЕРНУТЬ wrap_cpp(apply_edits(std::move(rebuilt), edits), filename);
+}
+
 struct Options {
     string action, source, output, cxx = "g++", std_flag = "c++20", optimize = "-O2", keep_cpp;
     std::vector<string> run_args;
@@ -887,14 +1005,14 @@ struct Options {
 
 Options parse_args(int argc, char** argv) {
     if (argc == 2 && string(argv[1]) == "--version") {
-        std::cout << "Omnissiah++ native R03 (self-hosting + core AST)\n";
+        std::cout << "Omnissiah++ native R04 (self-hosting + source AST)\n";
         std::exit(0);
     }
-    if (argc < 3) throw std::runtime_error("использование: omnic <check|ast|core-emit|core-build|core-run|emit|build|run> file.omn [-o file] [--dark-age] [--cxx g++]");
+    if (argc < 3) throw std::runtime_error("использование: omnic <check|ast|source-ast|source-emit|source-build|source-run|core-emit|core-build|core-run|emit|build|run> file.omn [-o file] [--dark-age] [--cxx g++]");
     Options opts;
     opts.action = argv[1];
     opts.source = argv[2];
-    if (opts.action != "check" && opts.action != "ast" && opts.action != "core-emit" && opts.action != "core-build" && opts.action != "core-run" && opts.action != "emit" && opts.action != "build" && opts.action != "run")
+    if (opts.action != "check" && opts.action != "source-ast" && opts.action != "source-emit" && opts.action != "source-build" && opts.action != "source-run" && opts.action != "ast" && opts.action != "core-emit" && opts.action != "core-build" && opts.action != "core-run" && opts.action != "emit" && opts.action != "build" && opts.action != "run")
         throw std::runtime_error("неизвестная команда: " + opts.action);
     for (int i = 3; i < argc; ++i) {
         string a = argv[i];
@@ -955,6 +1073,20 @@ int run(const Options& opt) {
     string source = read_file(opt.source);
     string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age);
     if (opt.dark_age) std::cerr << "⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.\n";
+    if (opt.action == "source-ast") {
+        string json = source_ast_json(source);
+        if (opt.output.empty()) std::cout << json;
+        else write_file(opt.output, json);
+        ВЕРНУТЬ 0;
+    }
+    if (opt.action == "source-emit" || opt.action == "source-build" || opt.action == "source-run") {
+        translated = emit_source_cpp(source, absolute.lexically_normal().string(), opt.dark_age);
+        if (opt.action == "source-emit") {
+            if (opt.output.empty()) std::cout << translated;
+            else write_file(opt.output, translated);
+            ВЕРНУТЬ 0;
+        }
+    }
     if (opt.action == "ast") {
         string json = ast_json(source);
         if (opt.output.empty()) std::cout << json;
@@ -981,13 +1113,13 @@ int run(const Options& opt) {
     Scratch scratch;
     fs::path cpp = scratch.directory / "translation.cpp";
     fs::path out = opt.output.empty() ? fs::path(opt.source).replace_extension("") : fs::path(opt.output);
-    if (opt.action == "run" || opt.action == "core-run") out = scratch.directory / "ritual";
+    if (opt.action == "run" || opt.action == "source-run" || opt.action == "core-run") out = scratch.directory / "ritual";
     write_file(cpp, translated);
     if (!opt.keep_cpp.empty()) write_file(opt.keep_cpp, translated);
     if (!out.parent_path().empty()) fs::create_directories(out.parent_path());
     int rc = execute({opt.cxx, "-std=" + opt.std_flag, opt.optimize, "-Wall", "-Wextra", "-pedantic", cpp.string(), "-o", out.string()});
     if (rc) ВЕРНУТЬ rc;
-    if (opt.action == "build" || opt.action == "core-build") {
+    if (opt.action == "build" || opt.action == "source-build" || opt.action == "core-build") {
         std::cout << "Компиляция завершена: " << out.string() << '\n';
         ВЕРНУТЬ 0;
     }

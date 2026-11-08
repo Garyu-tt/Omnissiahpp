@@ -18,3 +18,5 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Independent three-generation self-hosting bootstrap
         run: bash scripts/bootstrap.sh
+      - name: Clang structural AST self-hosting bootstrap
+        run: CXX=clang++ bash scripts/bootstrap.sh
