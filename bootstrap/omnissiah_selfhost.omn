@@ -997,6 +997,7 @@ int run(const Options& opt) {
 }
 
 } // namespace omni_native
+
 ЛИТАНИЯ главная(int argc, char** argv) {
     try {
         ВЕРНУТЬ omni_native::run(omni_native::parse_args(argc, argv));
