@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from gothic_dialects import DIALECTS, normalize_identifier
 import os
 from pathlib import Path
 import re
@@ -199,11 +200,15 @@ def _is_alloc(sig: list[Token], i: int) -> bool:
                  'calloc', 'realloc', 'free', 'make_unique', 'make_shared'}
 
 
-def transpile(source: str, filename: str = '<input>', *, dark_age: bool = False) -> str:
+def transpile(source: str, filename: str = '<input>', *, dark_age: bool = False,
+              dialect: str = 'ru') -> str:
     if '\x00' in source:
         raise OmnissiahError('OMN043', 'NUL в исходном файле')
+    if dialect not in DIALECTS:
+        raise OmnissiahError('OMN050', f'неизвестный диалект: {dialect}')
     toks = lex(source)
-    sig = _significant(toks)
+    sig = [replace(t, value=normalize_identifier(t.value, dialect))
+           if t.kind == 'identifier' else t for t in _significant(toks)]
     edits: list[tuple[int, int, str]] = []
     rituals: dict[str, Token] = {}
     invoked = ended = False
@@ -261,8 +266,11 @@ def transpile(source: str, filename: str = '<input>', *, dark_age: bool = False)
             raise OmnissiahError('OMN021', 'ввод-вывод требует ВОССЛАВИТЬ машинный_дух;', t)
         if _is_alloc(sig, i) and 'memory' not in rituals and not dark_age:
             raise OmnissiahError('OMN022', 'выделение/освобождение памяти требует ОСВЯТИТЬ память;', t)
-        if t.kind == 'identifier' and v in KEYWORDS:
-            edits.append((t.start, t.end, KEYWORDS[v]))
+        if t.kind == 'identifier':
+            if v in KEYWORDS:
+                edits.append((t.start, t.end, KEYWORDS[v]))
+            elif v != source[t.start:t.end]:
+                edits.append((t.start, t.end, v))
         seen_nonritual = True
         i += 1
     if not dark_age:
@@ -283,9 +291,9 @@ def compiler_command(cxx: str, cpp: Path, output: Path, std: str = 'c++20', opti
 
 
 def build(source: Path, output: Path, *, cxx: str, dark_age: bool,
-          keep_cpp: Path | None, std: str, optimize: str) -> int:
+          keep_cpp: Path | None, std: str, optimize: str, dialect: str = 'ru') -> int:
     text = source.read_text(encoding='utf-8-sig')
-    generated = transpile(text, str(source.resolve()), dark_age=dark_age)
+    generated = transpile(text, str(source.resolve()), dark_age=dark_age, dialect=dialect)
     with tempfile.TemporaryDirectory(prefix='omnissiah-') as td:
         cpp = Path(td) / (source.stem + '.cpp')
         cpp.write_text(generated, encoding='utf-8')
@@ -305,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument('source', type=Path, help='Исходный .omn/.opp файл UTF-8')
         p.add_argument('--dark-age', action='store_true', help='Режим Тёмной эры: отключить обязательность ритуалов')
+        p.add_argument('--dialect', choices=DIALECTS, default='ru',
+                       help='ru (исходный), high-gothic (псевдолатынь), gothic (письменность Unicode)')
         if name in ('emit', 'build'):
             p.add_argument('-o', '--output', type=Path)
         if name in ('build', 'run'):
@@ -320,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dark_age:
             print('⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.', file=sys.stderr)
         if args.command in ('check', 'emit'):
-            generated = transpile(original, str(args.source.resolve()), dark_age=args.dark_age)
+            generated = transpile(original, str(args.source.resolve()), dark_age=args.dark_age, dialect=args.dialect)
             if args.command == 'check':
                 print(f'Омниссия благословил синтаксис: {args.source} (проверка ритуалов; C++ ещё не компилировался)')
             elif args.output:
@@ -333,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == 'build':
             output = args.output or args.source.with_suffix('')
             rc = build(args.source, output, cxx=args.cxx, dark_age=args.dark_age,
-                       keep_cpp=args.keep_cpp, std=args.std, optimize=args.optimize)
+                       keep_cpp=args.keep_cpp, std=args.std, optimize=args.optimize, dialect=args.dialect)
             if rc == 0:
                 print(f'Компиляция завершена: {output}')
             return rc
@@ -341,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             with tempfile.TemporaryDirectory(prefix='omnissiah-run-') as tmp:
                 executable = Path(tmp) / 'ritual'
                 rc = build(args.source, executable, cxx=args.cxx, dark_age=args.dark_age,
-                           keep_cpp=args.keep_cpp, std=args.std, optimize=args.optimize)
+                           keep_cpp=args.keep_cpp, std=args.std, optimize=args.optimize, dialect=args.dialect)
                 if rc:
                     return rc
                 return subprocess.run([str(executable), *args.arg]).returncode

@@ -1,0 +1,12 @@
+IN_NOMINE_OMNISSIAH;
+CONSECRA processorem;
+LAUDA spiritum_machinae;
+
+LITANIA primaria() {
+    NUMERUS numerum = 7;
+    SI (numerum > 0) {
+        ORATIO("Ave Omnissiah! ", numerum);
+    }
+    REDDO 0;
+}
+FINIS_RITUALIS;
