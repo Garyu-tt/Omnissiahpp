@@ -218,6 +218,127 @@ std::vector<Token> lex(const string& src) {
     ВЕРНУТЬ out;
 }
 
+
+// Optional liturgical spellings, kept outside the canonical Cyrillic syntax.
+const std::map<string, string> HIGH_GOTHIC = {
+    {"ALITER", "ИНАЧЕ"},
+    {"AUTOMATUM", "АВТО"},
+    {"CLASSIS", "КЛАСС"},
+    {"CONSECRA", "ОСВЯТИТЬ"},
+    {"CONSTANS", "ПОСТОЯННО"},
+    {"CREA", "НОВОЕ"},
+    {"DELE", "УДАЛИТЬ"},
+    {"DUM", "ПОКА_ДУХ_НЕ_УСМИРЕН"},
+    {"FALSUM", "ЛОЖЬ"},
+    {"FINIS_RITUALIS", "ДА_БУДЕТ_ВОЛЯ_МАШИНЫ"},
+    {"FRACTIO", "ДРОБЬ"},
+    {"FRAKTIO", "ДРОБЬ"},
+    {"FRANGE", "ПРЕРВАТЬ"},
+    {"IN_NOMINE_OMNISSIAH", "ВО_ИМЯ_ОМНИССИИ"},
+    {"ITERATIO", "СВЯЩЕННЫЙ_ЦИКЛ"},
+    {"KLASSIS", "КЛАСС"},
+    {"KONSEKRA", "ОСВЯТИТЬ"},
+    {"KONSTANS", "ПОСТОЯННО"},
+    {"KREA", "НОВОЕ"},
+    {"LAUDA", "ВОССЛАВИТЬ"},
+    {"LITANIA", "ЛИТАНИЯ"},
+    {"LOGICA", "ЛОГИКА"},
+    {"LOGIKA", "ЛОГИКА"},
+    {"MEMORIAM", "память"},
+    {"NUMERUS", "ЦЕЛОЕ"},
+    {"ORATIO", "МОЛИТВА"},
+    {"PERGE", "ПРОДОЛЖИТЬ"},
+    {"PRIMARIA", "главная"},
+    {"PRIVATUM", "ЧАСТНО"},
+    {"PRIWATUM", "ЧАСТНО"},
+    {"PROCESSOREM", "процессор"},
+    {"PROKESSOREM", "процессор"},
+    {"PROTECTUM", "ЗАЩИЩЕНО"},
+    {"PROTEKTUM", "ЗАЩИЩЕНО"},
+    {"PUBLICUM", "ПУБЛИЧНО"},
+    {"PUBLIKUM", "ПУБЛИЧНО"},
+    {"REDDO", "ВЕРНУТЬ"},
+    {"SI", "ЕСЛИ_ВОЛЯ_ОМНИССИИ"},
+    {"SPATIUM", "ПРОСТРАНСТВО"},
+    {"SPIRITUM_MACHINAE", "машинный_дух"},
+    {"SPIRITUM_MAKHINAE", "машинный_дух"},
+    {"STRUCTURA", "СТРУКТУРА"},
+    {"STRUKTURA", "СТРУКТУРА"},
+    {"TEMPLUM", "ШАБЛОН"},
+    {"UTERE", "ИСПОЛЬЗОВАТЬ"},
+    {"VACUUM", "НИЧТО"},
+    {"VERBUM", "СТРОКА"},
+    {"VERUM", "ИСТИНА"},
+    {"WAKUUM", "НИЧТО"},
+    {"WERBUM", "СТРОКА"},
+    {"WERUM", "ИСТИНА"},
+};
+const std::map<string, string> GOTHIC_LETTERS = {
+    {"𐌰", "a"},
+    {"𐌱", "b"},
+    {"𐌲", "g"},
+    {"𐌳", "d"},
+    {"𐌴", "e"},
+    {"𐌵", "q"},
+    {"𐌶", "z"},
+    {"𐌷", "h"},
+    {"𐌸", "th"},
+    {"𐌹", "i"},
+    {"𐌺", "k"},
+    {"𐌻", "l"},
+    {"𐌼", "m"},
+    {"𐌽", "n"},
+    {"𐌾", "j"},
+    {"𐌿", "u"},
+    {"𐍀", "p"},
+    {"𐍂", "r"},
+    {"𐍃", "s"},
+    {"𐍄", "t"},
+    {"𐍅", "w"},
+    {"𐍆", "f"},
+    {"𐍇", "ng"},
+    {"𐍈", "hw"},
+    {"𐍉", "o"},
+};
+
+string canonical_identifier(const string& word, const string& dialect) {
+    if (dialect == "ru") return word;
+    string transliterated;
+    if (dialect == "gothic") {
+        for (size_t i = 0; i < word.size();) {
+            if (i + 4 <= word.size()) {
+                string letter = word.substr(i, 4);
+                auto found = GOTHIC_LETTERS.find(letter);
+                if (found != GOTHIC_LETTERS.end()) {
+                    transliterated += found->second;
+                    i += 4;
+                    continue;
+                }
+            }
+            transliterated += word[i++];
+        }
+    } else transliterated = word;
+    string key = transliterated;
+    for (char& c : key) {
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    }
+    auto found = HIGH_GOTHIC.find(key);
+    return found == HIGH_GOTHIC.end() ? transliterated : found->second;
+}
+
+string canonical_core_source(const string& source, const string& dialect) {
+    // Needed by the restricted grammar backend; source-ast itself remains lossless.
+    if (dialect == "ru") return source;
+    const auto tokens = lex(source);
+    string result = source;
+    for (auto it = tokens.rbegin(); it != tokens.rend(); ++it) {
+        if (it->kind != "identifier") continue;
+        string word = canonical_identifier(it->value, dialect);
+        if (word != it->value) result.replace(it->start, it->end - it->start, word);
+    }
+    return result;
+}
+
 ЛОГИКА pattern(const std::vector<Token>& sig, size_t i, std::initializer_list<string_view> words) {
     if (i + words.size() > sig.size()) ВЕРНУТЬ ЛОЖЬ;
     size_t k = 0;
@@ -254,13 +375,19 @@ string masked(const string& src) {
     ВЕРНУТЬ masked_text;
 }
 
-std::vector<Edit> analyze_edits(const string& source, ЛОГИКА dark_age = ЛОЖЬ) {
+std::vector<Edit> analyze_edits(const string& source, ЛОГИКА dark_age = ЛОЖЬ, const string& dialect = "ru") {
+    if (dialect != "ru" && dialect != "high-gothic" && dialect != "gothic")
+        throw Heresy("OMN050", "неизвестный диалект: " + dialect);
     if (source.find('\0') != string::npos) throw Heresy("OMN043", "NUL в исходном файле");
     verify_utf8(source);
     const auto tokens = lex(source);
     std::vector<Token> sig;
     for (const auto& t : tokens) {
-        if (t.kind != "ws" && t.kind != "comment" && t.kind != "directive") sig.push_back(t);
+        if (t.kind != "ws" && t.kind != "comment" && t.kind != "directive") {
+            Token effective = t;
+            if (t.kind == "identifier") effective.value = canonical_identifier(t.value, dialect);
+            sig.push_back(std::move(effective));
+        }
     }
     std::vector<Edit> edits;
     std::map<string, Token> rituals;
@@ -315,7 +442,10 @@ std::vector<Edit> analyze_edits(const string& source, ЛОГИКА dark_age = Л
         if (is_allocation(v) && !rituals.count("memory") && !dark_age)
             throw Heresy("OMN022", "выделение/освобождение памяти требует ОСВЯТИТЬ память;", t);
         auto word = KEYWORDS.find(v);
-        if (t.kind == "identifier" && word != KEYWORDS.end()) edits.push_back(Edit{t.start, t.end, word->second});
+        if (t.kind == "identifier") {
+            if (word != KEYWORDS.end()) edits.push_back(Edit{t.start, t.end, word->second});
+            else if (v != source.substr(t.start, t.end - t.start)) edits.push_back(Edit{t.start, t.end, v});
+        }
         seen_nonritual = ИСТИНА;
         ++i;
     }
@@ -341,8 +471,8 @@ string apply_edits(string source, const std::vector<Edit>& edits) {
     ВЕРНУТЬ source;
 }
 
-string transpile(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
-    ВЕРНУТЬ wrap_cpp(apply_edits(source, analyze_edits(source, dark_age)), filename);
+string transpile(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ, const string& dialect = "ru") {
+    ВЕРНУТЬ wrap_cpp(apply_edits(source, analyze_edits(source, dark_age, dialect)), filename);
 }
 
 string read_file(const fs::path& path) {
@@ -1041,10 +1171,10 @@ string source_ast_json(const string& source) {
     ВЕРНУТЬ out + "\n";
 }
 
-string emit_source_cpp(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
+string emit_source_cpp(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ, const string& dialect = "ru") {
     // Keep ritual enforcement shared, but reconstruct the source from the
     // recursive AST rather than using the original input as the output buffer.
-    const auto edits = analyze_edits(source, dark_age);
+    const auto edits = analyze_edits(source, dark_age, dialect);
     SourceParser parser(source);
     SourceNode tree = parser.program();
     string rebuilt;
@@ -1055,7 +1185,7 @@ string emit_source_cpp(const string& source, const string& filename, ЛОГИК�
 }
 
 struct Options {
-    string action, source, output, cxx = "g++", std_flag = "c++20", optimize = "-O2", keep_cpp;
+    string action, source, output, cxx = "g++", std_flag = "c++20", optimize = "-O2", keep_cpp, dialect = "ru";
     std::vector<string> run_args;
     ЛОГИКА dark_age = ЛОЖЬ;
 };
@@ -1074,6 +1204,12 @@ Options parse_args(int argc, char** argv) {
     for (int i = 3; i < argc; ++i) {
         string a = argv[i];
         if (a == "--dark-age") opts.dark_age = ИСТИНА;
+        else if (a == "--dialect") {
+            if (++i >= argc) throw std::runtime_error("требуется имя диалекта");
+            opts.dialect = argv[i];
+        } else if (a.rfind("--dialect=", 0) == 0) {
+            opts.dialect = a.substr(string("--dialect=").size());
+        }
         else if (a == "-o" || a == "--output") {
             if (++i >= argc) throw std::runtime_error("требуется аргумент после -o");
             opts.output = argv[i];
@@ -1096,6 +1232,8 @@ Options parse_args(int argc, char** argv) {
             opts.run_args.push_back(argv[i]);
         } else throw std::runtime_error("неизвестный аргумент: " + a);
     }
+    if (opts.dialect != "ru" && opts.dialect != "high-gothic" && opts.dialect != "gothic")
+        throw std::runtime_error("диалект: ru, high-gothic или gothic");
     if (opts.std_flag != "c++17" && opts.std_flag != "c++20" && opts.std_flag != "c++23")
         throw std::runtime_error("поддерживаются c++17, c++20, c++23");
     if (opts.optimize != "-O0" && opts.optimize != "-O1" && opts.optimize != "-O2" &&
@@ -1128,7 +1266,7 @@ struct Scratch {
 int run(const Options& opt) {
     fs::path absolute = fs::absolute(opt.source);
     string source = read_file(opt.source);
-    string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age);
+    string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age, opt.dialect);
     if (opt.dark_age) std::cerr << "⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.\n";
     if (opt.action == "source-ast") {
         string json = source_ast_json(source);
@@ -1137,7 +1275,7 @@ int run(const Options& opt) {
         ВЕРНУТЬ 0;
     }
     if (opt.action == "source-emit" || opt.action == "source-build" || opt.action == "source-run") {
-        translated = emit_source_cpp(source, absolute.lexically_normal().string(), opt.dark_age);
+        translated = emit_source_cpp(source, absolute.lexically_normal().string(), opt.dark_age, opt.dialect);
         if (opt.action == "source-emit") {
             if (opt.output.empty()) std::cout << translated;
             else write_file(opt.output, translated);
@@ -1145,13 +1283,13 @@ int run(const Options& opt) {
         }
     }
     if (opt.action == "ast") {
-        string json = ast_json(source);
+        string json = ast_json(canonical_core_source(source, opt.dialect));
         if (opt.output.empty()) std::cout << json;
         else write_file(opt.output, json);
         ВЕРНУТЬ 0;
     }
     if (opt.action == "core-emit" || opt.action == "core-build" || opt.action == "core-run") {
-        translated = emit_core_cpp(source, absolute.lexically_normal().string());
+        translated = emit_core_cpp(canonical_core_source(source, opt.dialect), absolute.lexically_normal().string());
         if (opt.action == "core-emit") {
             if (opt.output.empty()) std::cout << translated;
             else write_file(opt.output, translated);
