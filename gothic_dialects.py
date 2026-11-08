@@ -7,7 +7,7 @@ claim that the two languages are historically related.
 """
 from __future__ import annotations
 
-DIALECTS = ("ru", "high-gothic", "gothic")
+DIALECTS = ("ru", "high-gothic", "gothic", "binary-cant")
 
 # Canonical output tokens intentionally reuse the established ritual checker.
 HIGH_GOTHIC = {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 from gothic_dialects import DIALECTS, normalize_identifier
+from binary_cant import BinaryCantError, decode_cant
 import os
 from pathlib import Path
 import re
@@ -202,6 +203,15 @@ def _is_alloc(sig: list[Token], i: int) -> bool:
 
 def transpile(source: str, filename: str = '<input>', *, dark_age: bool = False,
               dialect: str = 'ru') -> str:
+    binary_cant = dialect == "binary-cant"
+    if binary_cant:
+        if dark_age:
+            raise OmnissiahError('OMN064', 'Binary Cant запрещает Тёмную эру: молитвы обязательны')
+        try:
+            source = decode_cant(source)
+        except BinaryCantError as err:
+            raise OmnissiahError(err.code, str(err)) from err
+        dialect = "high-gothic"
     if '\x00' in source:
         raise OmnissiahError('OMN043', 'NUL в исходном файле')
     if dialect not in DIALECTS:
@@ -278,6 +288,19 @@ def transpile(source: str, filename: str = '<input>', *, dark_age: bool = False,
             raise OmnissiahError('OMN001', 'отсутствует ВО_ИМЯ_ОМНИССИИ;')
         if not ended:
             raise OmnissiahError('OMN019', 'отсутствует ДА_БУДЕТ_ВОЛЯ_МАШИНЫ;')
+    if binary_cant:
+        words = [t.value for t in sig]
+        required = (
+            ('ОСВЯТИТЬ', 'процессор', ';'),
+            ('ОСВЯТИТЬ', 'память', ';'),
+            ('ВОССЛАВИТЬ', 'машинный_дух', ';'),
+        )
+        for rite in required:
+            if not any(tuple(words[k:k+3]) == rite for k in range(len(words) - 2)):
+                raise OmnissiahError('OMN063', f'Binary Cant требует ритуал: {" ".join(rite)}')
+        if not any(words[k] == 'МОЛИТВА' and words[k+1] == '('
+                   for k in range(len(words) - 1)):
+            raise OmnissiahError('OMN063', 'Binary Cant требует хотя бы одну МОЛИТВА(...)')
     # Apply backwards, maintaining line numbers exactly.
     translated = source
     for start, end, replacement in sorted(edits, key=lambda x: x[0], reverse=True):
@@ -314,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument('source', type=Path, help='Исходный .omn/.opp файл UTF-8')
         p.add_argument('--dark-age', action='store_true', help='Режим Тёмной эры: отключить обязательность ритуалов')
         p.add_argument('--dialect', choices=DIALECTS, default='ru',
-                       help='ru (исходный), high-gothic (псевдолатынь), gothic (письменность Unicode)')
+                       help='ru, high-gothic, gothic или binary-cant (бинарная литания)')
         if name in ('emit', 'build'):
             p.add_argument('-o', '--output', type=Path)
         if name in ('build', 'run'):
