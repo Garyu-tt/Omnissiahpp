@@ -1,0 +1,492 @@
+// Omnissiah++ R02: native self-hosting transpiler.
+// Stage 0: Python R01 builds this source once.
+// Stage 1+: this executable translates this same .omn source without Python.
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstddef>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#ifndef _WIN32
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+ВО_ИМЯ_ОМНИССИИ;
+ОСВЯТИТЬ процессор;
+ОСВЯТИТЬ память;
+ВОССЛАВИТЬ машинный_дух;
+
+namespace omni_native {
+
+namespace fs = std::filesystem;
+using std::size_t;
+using std::string;
+using std::string_view;
+
+struct Token {
+    string kind;
+    string value;
+    size_t start = 0, end = 0;
+    int line = 1, column = 1;
+};
+struct Edit { size_t start, end; string text; };
+
+struct Heresy : std::runtime_error {
+    string code;
+    std::optional<Token> token;
+    Heresy(string id, string message, std::optional<Token> t = std::nullopt)
+        : std::runtime_error(message), code(std::move(id)), token(std::move(t)) {}
+    string format(const string& path) const {
+        string where = path;
+        if (token) where += ":" + std::to_string(token->line) + ":" + std::to_string(token->column);
+        return where + ": error " + code + ": " + what();
+    }
+};
+
+// Match the Python R01 runtime byte-for-byte for a traceable bootstrap.
+const string RUNTIME = R"OMNIRUNTIME(// Omnissiah++ runtime v0.1.0
+#include <iostream>
+#include <string>
+#include <utility>
+namespace omni {
+    template<typename... Args>
+    void prayer(Args&&... args) {
+        if constexpr (sizeof...(Args) > 0) {
+            (std::cout << ... << std::forward<Args>(args));
+        }
+        std::cout << '\n';
+    }
+}
+)OMNIRUNTIME";
+
+const std::map<string, string> KEYWORDS = {
+    {"ЛИТАНИЯ", "int"}, {"главная", "main"}, {"ГЛАВНАЯ", "main"},
+    {"ЦЕЛОЕ", "int"}, {"ДРОБЬ", "double"}, {"СТРОКА", "std::string"},
+    {"ЛОГИКА", "bool"}, {"ИСТИНА", "true"}, {"ЛОЖЬ", "false"},
+    {"НИЧТО", "void"}, {"АВТО", "auto"}, {"ПОСТОЯННО", "const"},
+    {"ЕСЛИ_ВОЛЯ_ОМНИССИИ", "if"}, {"ИНАЧЕ", "else"},
+    {"ПОКА_ДУХ_НЕ_УСМИРЕН", "while"}, {"СВЯЩЕННЫЙ_ЦИКЛ", "for"},
+    {"ВЕРНУТЬ", "return"}, {"ПРЕРВАТЬ", "break"}, {"ПРОДОЛЖИТЬ", "continue"},
+    {"КЛАСС", "class"}, {"СТРУКТУРА", "struct"}, {"ШАБЛОН", "template"},
+    {"ПУБЛИЧНО", "public"}, {"ЧАСТНО", "private"}, {"ЗАЩИЩЕНО", "protected"},
+    {"НОВОЕ", "new"}, {"УДАЛИТЬ", "delete"}, {"ПРОСТРАНСТВО", "namespace"},
+    {"ИСПОЛЬЗОВАТЬ", "using"}, {"МОЛИТВА", "omni::prayer"},
+};
+
+ЛОГИКА ascii_alpha(unsigned char c) { ВЕРНУТЬ (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+ЛОГИКА ascii_digit(unsigned char c) { ВЕРНУТЬ c >= '0' && c <= '9'; }
+ЛОГИКА ident_start(unsigned char c) { ВЕРНУТЬ ascii_alpha(c) || c == '_' || c >= 0x80; }
+ЛОГИКА ident_rest(unsigned char c) { ВЕРНУТЬ ident_start(c) || ascii_digit(c); }
+ЛОГИКА whitespace(unsigned char c) { ВЕРНУТЬ c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f'; }
+ЛОГИКА starts(const string& s, size_t pos, string_view pattern) {
+    ВЕРНУТЬ pos <= s.size() && s.compare(pos, pattern.size(), pattern) == 0;
+}
+
+// A small, strict UTF-8 verifier. Our byte offsets stay valid in any locale.
+НИЧТО verify_utf8(const string& src) {
+    for (size_t i = 0; i < src.size();) {
+        unsigned char a = static_cast<unsigned char>(src[i]);
+        if (a < 0x80) { ++i; continue; }
+        unsigned count = 0;
+        if (a >= 0xC2 && a <= 0xDF) count = 2;
+        else if (a >= 0xE0 && a <= 0xEF) count = 3;
+        else if (a >= 0xF0 && a <= 0xF4) count = 4;
+        else throw Heresy("OMN044", "некорректный UTF-8");
+        if (i + count > src.size()) throw Heresy("OMN044", "обрезанный UTF-8");
+        for (unsigned j = 1; j < count; ++j) {
+            unsigned char b = static_cast<unsigned char>(src[i + j]);
+            if (b < 0x80 || b > 0xBF) throw Heresy("OMN044", "некорректный UTF-8");
+        }
+        unsigned char b = static_cast<unsigned char>(src[i + 1]);
+        if ((a == 0xE0 && b < 0xA0) || (a == 0xED && b >= 0xA0) ||
+            (a == 0xF0 && b < 0x90) || (a == 0xF4 && b >= 0x90))
+            throw Heresy("OMN044", "некорректная кодовая точка UTF-8");
+        i += count;
+    }
+}
+
+std::vector<Token> lex(const string& src) {
+    std::vector<Token> out;
+    size_t i = 0;
+    int line = 1, col = 1;
+    ЛОГИКА line_prefix_whitespace = ИСТИНА;
+    while (i < src.size()) {
+        size_t begin = i;
+        int sl = line, sc = col;
+        unsigned char c = static_cast<unsigned char>(src[i]);
+        string kind = "punct";
+        if (whitespace(c)) {
+            kind = "ws";
+            do { ++i; } while (i < src.size() && whitespace(static_cast<unsigned char>(src[i])));
+        } else if (c == '#' && line_prefix_whitespace) {
+            kind = "directive";
+            ++i;
+            while (i < src.size()) {
+                size_t eol = src.find('\n', i);
+                if (eol == string::npos) { i = src.size(); break; }
+                size_t end = eol;
+                while (end > i && (src[end - 1] == '\r' || src[end - 1] == ' ' || src[end - 1] == '\t')) --end;
+                ЛОГИКА continuation = end > i && src[end - 1] == '\\';
+                i = eol + 1;
+                if (!continuation) break;
+            }
+        } else if (starts(src, i, "//")) {
+            kind = "comment";
+            size_t eol = src.find('\n', i);
+            i = eol == string::npos ? src.size() : eol;
+        } else if (starts(src, i, "/*")) {
+            kind = "comment";
+            size_t end = src.find("*/", i + 2);
+            if (end == string::npos) throw Heresy("OMN040", "незакрытый комментарий", Token{kind, "", begin, begin, sl, sc});
+            i = end + 2;
+        } else {
+            // Raw C++ literals, including UTF prefixes: R"tag(...)tag".
+            size_t cursor = i;
+            if (starts(src, cursor, "u8")) cursor += 2;
+            else if (cursor < src.size() && (src[cursor] == 'u' || src[cursor] == 'U' || src[cursor] == 'L')) ++cursor;
+            ЛОГИКА raw = starts(src, cursor, "R\"");
+            size_t raw_tag_end = string::npos;
+            if (raw) {
+                raw_tag_end = src.find('(', cursor + 2);
+                if (raw_tag_end == string::npos || raw_tag_end - (cursor + 2) > 16) raw = ЛОЖЬ;
+                else {
+                    for (size_t k = cursor + 2; k < raw_tag_end; ++k) {
+                        unsigned char d = static_cast<unsigned char>(src[k]);
+                        if (whitespace(d) || d == '(' || d == ')' || d == '\\') { raw = ЛОЖЬ; break; }
+                    }
+                }
+            }
+            if (raw) {
+                kind = "string";
+                string close = ")" + src.substr(cursor + 2, raw_tag_end - cursor - 2) + "\"";
+                size_t end = src.find(close, raw_tag_end + 1);
+                if (end == string::npos) throw Heresy("OMN041", "незакрытая raw-строка", Token{kind, "", begin, begin, sl, sc});
+                i = end + close.size();
+            } else {
+                cursor = i;
+                if (starts(src, cursor, "u8")) cursor += 2;
+                else if (cursor < src.size() && (src[cursor] == 'u' || src[cursor] == 'U' || src[cursor] == 'L')) ++cursor;
+                ЛОГИКА normal = cursor < src.size() && (src[cursor] == '\"' || src[cursor] == '\'');
+                if (normal) {
+                    kind = "string";
+                    char quote = src[cursor++];
+                    i = cursor;
+                    ЛОГИКА closed = ЛОЖЬ;
+                    while (i < src.size()) {
+                        if (src[i] == '\\') i = std::min(i + size_t{2}, src.size());
+                        else if (src[i] == quote) { ++i; closed = ИСТИНА; break; }
+                        else ++i;
+                    }
+                    if (!closed) throw Heresy("OMN042", "незакрытая строка или символ", Token{kind, "", begin, begin, sl, sc});
+                } else if (ident_start(c)) {
+                    kind = "identifier";
+                    ++i;
+                    while (i < src.size() && ident_rest(static_cast<unsigned char>(src[i]))) ++i;
+                } else if (ascii_digit(c)) {
+                    kind = "number";
+                    ++i;
+                    while (i < src.size()) {
+                        unsigned char d = static_cast<unsigned char>(src[i]);
+                        if (ident_rest(d) || d == '.' || d == '\'') ++i;
+                        else break;
+                    }
+                } else ++i;
+            }
+        }
+        string value = src.substr(begin, i - begin);
+        out.push_back(Token{kind, value, begin, i, sl, sc});
+        for (size_t k = 0; k < value.size(); ++k) {
+            unsigned char d = static_cast<unsigned char>(value[k]);
+            if (d == '\n') { ++line; col = 1; line_prefix_whitespace = ИСТИНА; }
+            else {
+                if ((d & 0xC0) != 0x80) ++col;
+                if (d != ' ' && d != '\t' && d != '\r') line_prefix_whitespace = ЛОЖЬ;
+            }
+        }
+    }
+    ВЕРНУТЬ out;
+}
+
+ЛОГИКА pattern(const std::vector<Token>& sig, size_t i, std::initializer_list<string_view> words) {
+    if (i + words.size() > sig.size()) ВЕРНУТЬ ЛОЖЬ;
+    size_t k = 0;
+    for (auto word : words) if (sig[i + k++].value != word) ВЕРНУТЬ ЛОЖЬ;
+    ВЕРНУТЬ ИСТИНА;
+}
+
+ЛОГИКА is_io(const std::vector<Token>& sig, size_t i) {
+    const string& v = sig[i].value;
+    static const std::array<string_view, 12> names = {
+        "МОЛИТВА", "printf", "scanf", "puts", "putchar", "getchar", "fprintf",
+        "fputs", "fgets", "fopen", "fread", "fwrite"};
+    if (std::find(names.begin(), names.end(), v) != names.end()) ВЕРНУТЬ ИСТИНА;
+    if (v == "ofstream" || v == "ifstream" || v == "fstream") ВЕРНУТЬ ИСТИНА;
+    static const std::array<string_view, 9> std_io = {
+        "cout", "cin", "cerr", "clog", "print", "println", "ofstream", "ifstream", "fstream"};
+    for (auto name : std_io) if (pattern(sig, i, {"std", ":", ":", name})) ВЕРНУТЬ ИСТИНА;
+    ВЕРНУТЬ ЛОЖЬ;
+}
+
+ЛОГИКА is_allocation(const string& v) {
+    static const std::array<string_view, 10> names = {
+        "new", "delete", "НОВОЕ", "УДАЛИТЬ", "malloc", "calloc", "realloc", "free", "make_unique", "make_shared"};
+    ВЕРНУТЬ std::find(names.begin(), names.end(), v) != names.end();
+}
+
+string masked(const string& src) {
+    string masked_text;
+    masked_text.reserve(src.size());
+    for (unsigned char c : src) {
+        if (c == '\n') masked_text += '\n';
+        else if ((c & 0xC0) != 0x80) masked_text += ' ';
+    }
+    ВЕРНУТЬ masked_text;
+}
+
+string transpile(const string& source, const string& filename, ЛОГИКА dark_age = ЛОЖЬ) {
+    if (source.find('\0') != string::npos) throw Heresy("OMN043", "NUL в исходном файле");
+    verify_utf8(source);
+    const auto tokens = lex(source);
+    std::vector<Token> sig;
+    for (const auto& t : tokens) {
+        if (t.kind != "ws" && t.kind != "comment" && t.kind != "directive") sig.push_back(t);
+    }
+    std::vector<Edit> edits;
+    std::map<string, Token> rituals;
+    ЛОГИКА invoked = ЛОЖЬ, ended = ЛОЖЬ, seen_nonritual = ЛОЖЬ;
+    int depth = 0;
+    for (size_t i = 0; i < sig.size();) {
+        const Token& t = sig[i];
+        const string& v = t.value;
+        if (v == "ВО_ИМЯ_ОМНИССИИ" || v == "ДА_БУДЕТ_ВОЛЯ_МАШИНЫ" || v == "ОСВЯТИТЬ" || v == "ВОССЛАВИТЬ") {
+            if (depth) throw Heresy("OMN012", "ритуал разрешён только на верхнем уровне", t);
+            if (v == "ВО_ИМЯ_ОМНИССИИ" || v == "ДА_БУДЕТ_ВОЛЯ_МАШИНЫ") {
+                if (i + 1 >= sig.size() || sig[i + 1].value != ";")
+                    throw Heresy("OMN013", "после священного маркера нужна точка с запятой", t);
+                if (v == "ВО_ИМЯ_ОМНИССИИ") {
+                    if (invoked || (seen_nonritual && !dark_age))
+                        throw Heresy("OMN001", "призыв Омниссии должен быть первым", t);
+                    invoked = ИСТИНА;
+                } else {
+                    if (ended) throw Heresy("OMN014", "завершение указано дважды", t);
+                    ended = ИСТИНА;
+                    if (i + 2 < sig.size()) throw Heresy("OMN015", "после завершения не должно быть кода", sig[i + 2]);
+                }
+                edits.push_back(Edit{t.start, sig[i + 1].end, masked(source.substr(t.start, sig[i + 1].end - t.start))});
+                i += 2;
+                continue;
+            }
+            if (i + 2 >= sig.size() || sig[i + 2].value != ";")
+                throw Heresy("OMN016", "ритуал имеет форму «ОСВЯТИТЬ память;»", t);
+            string kind;
+            const string& target = sig[i + 1].value;
+            if (v == "ОСВЯТИТЬ" && target == "процессор") kind = "cpu";
+            else if (v == "ОСВЯТИТЬ" && target == "память") kind = "memory";
+            else if (v == "ВОССЛАВИТЬ" && target == "машинный_дух") kind = "io";
+            else throw Heresy("OMN017", "неизвестный ритуал «" + v + " " + target + "»", t);
+            if (!invoked && !dark_age) throw Heresy("OMN001", "сначала призови Омниссию", t);
+            if (seen_nonritual && !dark_age) throw Heresy("OMN018", "ритуалы должны предшествовать объявлениям и функциям", t);
+            rituals[kind] = t;
+            edits.push_back(Edit{t.start, sig[i + 2].end, masked(source.substr(t.start, sig[i + 2].end - t.start))});
+            i += 3;
+            continue;
+        }
+        if (v == "{") ++depth;
+        if (v == "}") --depth;
+        if (!invoked && !dark_age) throw Heresy("OMN001", "первая инструкция: ВО_ИМЯ_ОМНИССИИ;", t);
+        if (ended) throw Heresy("OMN015", "код после завершения", t);
+        if ((v == "главная" || v == "ГЛАВНАЯ" || v == "main") && i + 1 < sig.size() && sig[i + 1].value == "(") {
+            if (!rituals.count("cpu") && !dark_age)
+                throw Heresy("OMN020", "прежде чем объявить main(), напиши ОСВЯТИТЬ процессор;", t);
+        }
+        if (is_io(sig, i) && !rituals.count("io") && !dark_age)
+            throw Heresy("OMN021", "ввод-вывод требует ВОССЛАВИТЬ машинный_дух;", t);
+        if (is_allocation(v) && !rituals.count("memory") && !dark_age)
+            throw Heresy("OMN022", "выделение/освобождение памяти требует ОСВЯТИТЬ память;", t);
+        auto word = KEYWORDS.find(v);
+        if (t.kind == "identifier" && word != KEYWORDS.end()) edits.push_back(Edit{t.start, t.end, word->second});
+        seen_nonritual = ИСТИНА;
+        ++i;
+    }
+    if (!dark_age) {
+        if (!invoked) throw Heresy("OMN001", "отсутствует ВО_ИМЯ_ОМНИССИИ;");
+        if (!ended) throw Heresy("OMN019", "отсутствует ДА_БУДЕТ_ВОЛЯ_МАШИНЫ;");
+    }
+    string translated = source;
+    for (auto it = edits.rbegin(); it != edits.rend(); ++it)
+        translated.replace(it->start, it->end - it->start, it->text);
+    string escaped;
+    for (char c : filename) {
+        if (c == '\\' || c == '\"') escaped += '\\';
+        escaped += c == '\n' ? ' ' : c;
+    }
+    ВЕРНУТЬ RUNTIME + "\n#line 1 \"" + escaped + "\"\n" + translated;
+}
+
+string read_file(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("невозможно прочитать файл: " + path.string());
+    string src((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (starts(src, 0, "\xEF\xBB\xBF")) src.erase(0, 3);
+    ВЕРНУТЬ src;
+}
+
+НИЧТО write_file(const fs::path& path, const string& data) {
+    if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file || !(file << data)) throw std::runtime_error("невозможно записать файл: " + path.string());
+}
+
+int execute(const std::vector<string>& args) {
+#ifdef _WIN32
+    (void)args;
+    throw std::runtime_error("native build пока поддерживает POSIX; emit/check доступны на Windows");
+#else
+    if (args.empty()) throw std::runtime_error("нет команды для запуска");
+    pid_t pid = fork();
+    if (pid < 0) throw std::runtime_error("fork failed");
+    if (pid == 0) {
+        std::vector<char*> argv;
+        for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        std::cerr << "execvp failed: " << args[0] << '\n';
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) throw std::runtime_error("waitpid failed");
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
+#endif
+}
+
+struct Options {
+    string action, source, output, cxx = "g++", std_flag = "c++20", optimize = "-O2", keep_cpp;
+    std::vector<string> run_args;
+    ЛОГИКА dark_age = ЛОЖЬ;
+};
+
+Options parse_args(int argc, char** argv) {
+    if (argc == 2 && string(argv[1]) == "--version") {
+        std::cout << "Omnissiah++ native R02 (self-hosting)\n";
+        std::exit(0);
+    }
+    if (argc < 3) throw std::runtime_error("использование: omnic <check|emit|build|run> file.omn [-o file] [--dark-age] [--cxx g++]");
+    Options opts;
+    opts.action = argv[1];
+    opts.source = argv[2];
+    if (opts.action != "check" && opts.action != "emit" && opts.action != "build" && opts.action != "run")
+        throw std::runtime_error("неизвестная команда: " + opts.action);
+    for (int i = 3; i < argc; ++i) {
+        string a = argv[i];
+        if (a == "--dark-age") opts.dark_age = ИСТИНА;
+        else if (a == "-o" || a == "--output") {
+            if (++i >= argc) throw std::runtime_error("требуется аргумент после -o");
+            opts.output = argv[i];
+        } else if (a == "--cxx") {
+            if (++i >= argc) throw std::runtime_error("требуется имя компилятора");
+            opts.cxx = argv[i];
+        } else if (a == "--std") {
+            if (++i >= argc) throw std::runtime_error("требуется стандарт C++");
+            opts.std_flag = argv[i];
+        } else if (a == "--optimize") {
+            if (++i >= argc) throw std::runtime_error("требуется уровень оптимизации");
+            opts.optimize = argv[i];
+        } else if (a.rfind("--optimize=", 0) == 0) {
+            opts.optimize = a.substr(string("--optimize=").size());
+        } else if (a == "--keep-cpp") {
+            if (++i >= argc) throw std::runtime_error("требуется путь C++ файла");
+            opts.keep_cpp = argv[i];
+        } else if (a == "--arg") {
+            if (++i >= argc) throw std::runtime_error("требуется аргумент программы");
+            opts.run_args.push_back(argv[i]);
+        } else throw std::runtime_error("неизвестный аргумент: " + a);
+    }
+    if (opts.std_flag != "c++17" && opts.std_flag != "c++20" && opts.std_flag != "c++23")
+        throw std::runtime_error("поддерживаются c++17, c++20, c++23");
+    if (opts.optimize != "-O0" && opts.optimize != "-O1" && opts.optimize != "-O2" &&
+        opts.optimize != "-O3" && opts.optimize != "-Os")
+        throw std::runtime_error("неподдерживаемый уровень оптимизации");
+    ВЕРНУТЬ opts;
+}
+
+// A private scratch directory avoids predictable names and races in /tmp.
+struct Scratch {
+    fs::path directory;
+    Scratch() {
+#ifndef _WIN32
+        string pattern = (fs::temp_directory_path() / "omnissiah-XXXXXX").string();
+        std::vector<char> writable(pattern.begin(), pattern.end());
+        writable.push_back('\0');
+        char* made = mkdtemp(writable.data());
+        if (!made) throw std::runtime_error("mkdtemp failed");
+        directory = made;
+#else
+        throw std::runtime_error("native build пока поддерживает POSIX; emit/check доступны на Windows");
+#endif
+    }
+    ~Scratch() {
+        std::error_code ignored;
+        fs::remove_all(directory, ignored);
+    }
+};
+
+int run(const Options& opt) {
+    fs::path absolute = fs::absolute(opt.source);
+    string translated = transpile(read_file(opt.source), absolute.lexically_normal().string(), opt.dark_age);
+    if (opt.dark_age) std::cerr << "⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.\n";
+    if (opt.action == "check") {
+        std::cout << "Омниссия благословил синтаксис: " << opt.source << " (ритуалы проверены)\n";
+        ВЕРНУТЬ 0;
+    }
+    if (opt.action == "emit") {
+        if (opt.output.empty()) std::cout << translated;
+        else write_file(opt.output, translated);
+        ВЕРНУТЬ 0;
+    }
+    Scratch scratch;
+    fs::path cpp = scratch.directory / "translation.cpp";
+    fs::path out = opt.output.empty() ? fs::path(opt.source).replace_extension("") : fs::path(opt.output);
+    if (opt.action == "run") out = scratch.directory / "ritual";
+    write_file(cpp, translated);
+    if (!opt.keep_cpp.empty()) write_file(opt.keep_cpp, translated);
+    if (!out.parent_path().empty()) fs::create_directories(out.parent_path());
+    int rc = execute({opt.cxx, "-std=" + opt.std_flag, opt.optimize, "-Wall", "-Wextra", "-pedantic", cpp.string(), "-o", out.string()});
+    if (rc) ВЕРНУТЬ rc;
+    if (opt.action == "build") {
+        std::cout << "Компиляция завершена: " << out.string() << '\n';
+        ВЕРНУТЬ 0;
+    }
+    std::vector<string> cmd{fs::absolute(out).string()};
+    cmd.insert(cmd.end(), opt.run_args.begin(), opt.run_args.end());
+    ВЕРНУТЬ execute(cmd);
+}
+
+} // namespace omni_native
+
+ЛИТАНИЯ главная(int argc, char** argv) {
+    try {
+        ВЕРНУТЬ omni_native::run(omni_native::parse_args(argc, argv));
+    } catch (const omni_native::Heresy& err) {
+        std::cerr << err.format(argc > 2 ? argv[2] : "<input>") << '\n';
+        ВЕРНУТЬ 2;
+    } catch (const std::exception& err) {
+        std::cerr << "Ошибка: " << err.what() << '\n';
+        ВЕРНУТЬ 3;
+    }
+}
+ДА_БУДЕТ_ВОЛЯ_МАШИНЫ;

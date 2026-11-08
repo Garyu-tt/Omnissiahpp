@@ -14,5 +14,7 @@ jobs:
           python-version: '3.11'
       - name: Verify C++ compiler
         run: g++ --version
-      - name: Run sacred trials
+      - name: Python and native differential tests
         run: python3 -m unittest discover -s tests -v
+      - name: Independent three-generation self-hosting bootstrap
+        run: bash scripts/bootstrap.sh
