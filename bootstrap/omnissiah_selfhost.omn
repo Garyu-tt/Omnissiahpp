@@ -116,6 +116,39 @@ const std::map<string, string> KEYWORDS = {
     }
 }
 
+// R07: every Binary Cant word is one binary octet of a UTF-8 High Gothic text.
+// Delimiters are ASCII whitespace, and prayers are still checked after decoding.
+string decode_binary_cant(const string& stream) {
+    constexpr size_t max_octets = 4 * 1024 * 1024;
+    string decoded;
+    decoded.reserve(std::min(stream.size() / 9, max_octets));
+    size_t cursor = 0, ordinal = 0;
+    while (cursor < stream.size()) {
+        while (cursor < stream.size() && whitespace(static_cast<unsigned char>(stream[cursor]))) ++cursor;
+        if (cursor == stream.size()) break;
+        ++ordinal;
+        size_t start = cursor;
+        unsigned byte = 0;
+        while (cursor < stream.size() && !whitespace(static_cast<unsigned char>(stream[cursor]))) {
+            unsigned char bit = static_cast<unsigned char>(stream[cursor]);
+            if (bit != '0' && bit != '1')
+                throw Heresy("OMN060", "осквернённый бинарный октет #" + std::to_string(ordinal));
+            if (cursor - start >= 8)
+                throw Heresy("OMN060", "осквернённый бинарный октет #" + std::to_string(ordinal));
+            byte = (byte << 1) | (bit - '0');
+            ++cursor;
+        }
+        if (cursor - start != 8)
+            throw Heresy("OMN060", "осквернённый бинарный октет #" + std::to_string(ordinal));
+        if (decoded.size() >= max_octets)
+            throw Heresy("OMN062", "предел Binary Cant: 4 MiB");
+        decoded.push_back(static_cast<char>(byte));
+    }
+    try { verify_utf8(decoded); }
+    catch (const Heresy&) { throw Heresy("OMN061", "двоичный поток не является допустимым UTF-8"); }
+    return decoded;
+}
+
 std::vector<Token> lex(const string& src) {
     std::vector<Token> out;
     size_t i = 0;
@@ -454,6 +487,35 @@ std::vector<Edit> analyze_edits(const string& source, ЛОГИКА dark_age = Л
         if (!ended) throw Heresy("OMN019", "отсутствует ДА_БУДЕТ_ВОЛЯ_МАШИНЫ;");
     }
     ВЕРНУТЬ edits;
+}
+
+void validate_binary_litany(const string& decoded) {
+    // Independently enforce ALL consecrations and an actual prayer call.
+    // Comment and string tokens do not count as liturgies.
+    std::vector<string> words;
+    for (const auto& t : lex(decoded)) {
+        if (t.kind == "ws" || t.kind == "comment" || t.kind == "directive") continue;
+        words.push_back(t.kind == "identifier" ?
+                        canonical_identifier(t.value, "high-gothic") : t.value);
+    }
+    auto contains = [&words](std::initializer_list<string_view> rite) {
+        if (rite.size() > words.size()) return false;
+        for (size_t i = 0; i + rite.size() <= words.size(); ++i) {
+            bool matches = true;
+            size_t j = 0;
+            for (auto part : rite) if (words[i + j++] != part) { matches = false; break; }
+            if (matches) return true;
+        }
+        return false;
+    };
+    if (!contains({"ОСВЯТИТЬ", "процессор", ";"}))
+        throw Heresy("OMN063", "Binary Cant требует ОСВЯТИТЬ процессор;");
+    if (!contains({"ОСВЯТИТЬ", "память", ";"}))
+        throw Heresy("OMN063", "Binary Cant требует ОСВЯТИТЬ память;");
+    if (!contains({"ВОССЛАВИТЬ", "машинный_дух", ";"}))
+        throw Heresy("OMN063", "Binary Cant требует ВОССЛАВИТЬ машинный_дух;");
+    if (!contains({"МОЛИТВА", "("}))
+        throw Heresy("OMN063", "Binary Cant требует хотя бы одну МОЛИТВА(...)");
 }
 
 string wrap_cpp(const string& translated, const string& filename) {
@@ -1232,8 +1294,8 @@ Options parse_args(int argc, char** argv) {
             opts.run_args.push_back(argv[i]);
         } else throw std::runtime_error("неизвестный аргумент: " + a);
     }
-    if (opts.dialect != "ru" && opts.dialect != "high-gothic" && opts.dialect != "gothic")
-        throw std::runtime_error("диалект: ru, high-gothic или gothic");
+    if (opts.dialect != "ru" && opts.dialect != "high-gothic" && opts.dialect != "gothic" && opts.dialect != "binary-cant")
+        throw std::runtime_error("диалект: ru, high-gothic, gothic или binary-cant");
     if (opts.std_flag != "c++17" && opts.std_flag != "c++20" && opts.std_flag != "c++23")
         throw std::runtime_error("поддерживаются c++17, c++20, c++23");
     if (opts.optimize != "-O0" && opts.optimize != "-O1" && opts.optimize != "-O2" &&
@@ -1266,7 +1328,13 @@ struct Scratch {
 int run(const Options& opt) {
     fs::path absolute = fs::absolute(opt.source);
     string source = read_file(opt.source);
-    string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age, opt.dialect);
+    const bool binary_cant = opt.dialect == "binary-cant";
+    if (binary_cant && opt.dark_age)
+        throw Heresy("OMN064", "Binary Cant запрещает Тёмную эру: молитвы обязательны");
+    if (binary_cant) source = decode_binary_cant(source);
+    const string effective_dialect = binary_cant ? "high-gothic" : opt.dialect;
+    string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age, effective_dialect);
+    if (binary_cant) validate_binary_litany(source);
     if (opt.dark_age) std::cerr << "⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.\n";
     if (opt.action == "source-ast") {
         string json = source_ast_json(source);
@@ -1275,7 +1343,7 @@ int run(const Options& opt) {
         ВЕРНУТЬ 0;
     }
     if (opt.action == "source-emit" || opt.action == "source-build" || opt.action == "source-run") {
-        translated = emit_source_cpp(source, absolute.lexically_normal().string(), opt.dark_age, opt.dialect);
+        translated = emit_source_cpp(source, absolute.lexically_normal().string(), opt.dark_age, effective_dialect);
         if (opt.action == "source-emit") {
             if (opt.output.empty()) std::cout << translated;
             else write_file(opt.output, translated);
@@ -1283,13 +1351,13 @@ int run(const Options& opt) {
         }
     }
     if (opt.action == "ast") {
-        string json = ast_json(canonical_core_source(source, opt.dialect));
+        string json = ast_json(canonical_core_source(source, effective_dialect));
         if (opt.output.empty()) std::cout << json;
         else write_file(opt.output, json);
         ВЕРНУТЬ 0;
     }
     if (opt.action == "core-emit" || opt.action == "core-build" || opt.action == "core-run") {
-        translated = emit_core_cpp(canonical_core_source(source, opt.dialect), absolute.lexically_normal().string());
+        translated = emit_core_cpp(canonical_core_source(source, effective_dialect), absolute.lexically_normal().string());
         if (opt.action == "core-emit") {
             if (opt.output.empty()) std::cout << translated;
             else write_file(opt.output, translated);

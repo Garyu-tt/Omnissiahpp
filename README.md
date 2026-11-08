@@ -4,6 +4,64 @@
 
 Это **реально работающий прототип компилятора-транспайлера**, а не макет. Исходный код на Omnissiah++ (`.omn`) преобразуется в C++20 и компилируется установленным `g++`/`clang++`. Допускается смешивать ритуальные русскоязычные конструкции с обычным синтаксисом C++, включая классы, шаблоны, стандартную библиотеку и RAII.
 
+## R07: Binary Cant — машинная литания из нулей и единиц
+
+**Четвёртый диалект** `--dialect binary-cant`: исходный код целиком состоит
+из восьмибитных двоичных октетов (`0` и `1`, разделённых ASCII-пробелами).
+Каждый октет кодирует ровно один байт UTF-8 *псевдовысокого готика* R06.
+Имена, пробелы, точка с запятой, строки и сами молитвы тоже бинарные.
+Внутри это обратимый формат исходника, **не машинный код процессора** и
+не буквальный канонический бинарный кант из Warhammer 40,000.
+
+Начало реальной программы из [`examples/binary_cant.cant`](examples/binary_cant.cant):
+
+```text
+01001001 01001110 01011111 01001110 01001111 01001101 01001001 01001110
+01000101 01011111 01001111 01001101 01001110 01001001 01010011 01010011
+```
+
+Это закодированное `IN_NOMINE_OMNISSIAH;`. После декодирования программа
+содержит обязательную молитвенную часть:
+
+```cpp
+IN_NOMINE_OMNISSIAH;
+CONSECRA processorem;
+CONSECRA memoriam;
+LAUDA spiritum_machinae;
+
+LITANIA primaria() {
+    ORATIO("Ave Omnissiah! Binary Cant: 40");
+    REDDO 0;
+}
+FINIS_RITUALIS;
+```
+
+[Полный текст до преобразования](examples/binary_cant_source.omn) остаётся
+читаемым, а его бинарная версия компилируется напрямую. Для Binary Cant
+**все три освящения/восхваления плюс хотя бы одна `ORATIO(...)` обязательны**,
+даже если программа не выделяет память. Режим `--dark-age` намеренно запрещён.
+Отсутствующие литании, неверные октеты и некорректный UTF-8 дают
+`OMN063`, `OMN060` и `OMN061` соответственно.
+
+```bash
+# Кодировать вручную написанную литанию в бинарный файл
+python3 binary_cant.py encode examples/binary_cant_source.omn -o /tmp/my_prayer.cant
+# Обратно в читаемый текст
+python3 binary_cant.py decode /tmp/my_prayer.cant -o /tmp/my_prayer.omn
+
+# Компиляция Python bootstrap-транспайлером
+python3 omnissiah.py run examples/binary_cant.cant --dialect binary-cant
+# И тем же self-hosted компилятором, без Python во время исполнения
+bash scripts/bootstrap.sh build/bootstrap
+build/bootstrap/omnic-stage3 run examples/binary_cant.cant --dialect binary-cant
+build/bootstrap/omnic-stage3 source-ast examples/binary_cant.cant --dialect binary-cant
+```
+
+**Ограничения:** 4 MiB декодированного текста, строгие октеты из восьми бит,
+разделители только ASCII-пробелы. `source-ast` описывает восстановленный исходный
+код, не позиции октетов в `.cant`; ошибки C++ после `#line` тоже относятся к
+декодированным строкам, поэтому для отладки используйте `decode`.
+
 ## R06: High Gothic / Gothic Script — три литургии одного компилятора
 
 У компилятора теперь **три режима**. Оригинальный русский Omnissiah++ остаётся

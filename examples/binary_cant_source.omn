@@ -1,0 +1,11 @@
+IN_NOMINE_OMNISSIAH;
+CONSECRA processorem;
+CONSECRA memoriam;
+LAUDA spiritum_machinae;
+
+LITANIA primaria() {
+    NUMERUS incantatio = 40;
+    ORATIO("Ave Omnissiah! Binary Cant: ", incantatio);
+    REDDO 0;
+}
+FINIS_RITUALIS;
