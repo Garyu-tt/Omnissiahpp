@@ -56,6 +56,21 @@ class SourceASTTests(unittest.TestCase):
         self.assertTrue(any(n["kind"] == "directive" and "#include" in n["value"] for n in nodes))
         self.assertTrue(any(n["kind"] == "string" and "R\"OMNIRUNTIME" in n["value"] for n in nodes))
 
+    def test_r05_declaration_roles_preserve_lossless_source(self):
+        src = self.source('''namespace shrine {
+struct Relic { int charge; };
+int bless(int n) { return n + 1; }
+}
+''')
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        roles = [n.get("role") for n in self.walk(tree) if n["kind"] == "Group"]
+        self.assertIn("NamespaceBody", roles)
+        self.assertIn("TypeBody", roles)
+        self.assertIn("CallableOrControlBody", roles)
+        self.assertEqual(self.invoke("source-emit", src, "--dark-age").returncode, 0)
+
     def test_source_emitter_matches_legacy_byte_for_byte(self):
         for source in [SELF, *(ROOT / "examples").glob("*.omn")]:
             with self.subTest(source=source.name):

@@ -900,6 +900,7 @@ struct SourceNode {
     Token open;
     Token close;
     std::vector<SourceNode> children;
+    string role;
 };
 
 class SourceParser {
@@ -912,6 +913,32 @@ class SourceParser {
         if (symbol == "[") ВЕРНУТЬ "]";
         if (symbol == "{") ВЕРНУТЬ "}";
         ВЕРНУТЬ "";
+    }
+
+    // R05: grammar-aware labels for brace bodies. This deliberately uses only
+    // unambiguous declaration prefixes; ambiguous braces stay structural.
+    static string brace_role(const std::vector<SourceNode>& siblings) {
+        std::vector<string> words;
+        for (size_t i = siblings.size(); i > 0 && words.size() < 32; --i) {
+            const SourceNode& n = siblings[i - 1];
+            if (n.open.kind == "comment" || n.open.kind == "ws" ||
+                n.open.kind == "directive") continue;
+            if (n.open.value == ";" || n.open.value == "}" || n.open.value == "{") break;
+            words.push_back(n.open.value);
+        }
+        std::reverse(words.begin(), words.end());
+        for (const auto& word : words) {
+            if (word == "namespace" || word == "ПРОСТРАНСТВО") ВЕРНУТЬ "NamespaceBody";
+            if (word == "class" || word == "КЛАСС" || word == "struct" ||
+                word == "СТРУКТУРА" || word == "union") ВЕРНУТЬ "TypeBody";
+        }
+        for (size_t i = siblings.size(); i > 0; --i) {
+            const SourceNode& n = siblings[i - 1];
+            if (n.open.kind == "ws" || n.open.kind == "comment") continue;
+            if (n.kind == "Group" && n.open.value == "(") ВЕРНУТЬ "CallableOrControlBody";
+            break;
+        }
+        ВЕРНУТЬ "UnclassifiedBody";
     }
 
     SourceNode group(const Token& begin, string_view expected, size_t depth) {
@@ -927,8 +954,12 @@ class SourceParser {
                 (token.value == ")" || token.value == "]" || token.value == "}"))
                 throw Heresy("OMN131", "неожиданный закрывающий разделитель «" + token.value + "»", token);
             string close = token.kind == "punct" ? matching(token.value) : "";
-            if (!close.empty()) out.children.push_back(group(token, close, depth + 1));
-            else out.children.push_back(SourceNode{token.kind, token, token, {}});
+            if (!close.empty()) {
+                string role = token.value == "{" ? brace_role(out.children) : "";
+                SourceNode child = group(token, close, depth + 1);
+                child.role = role;
+                out.children.push_back(std::move(child));
+            } else out.children.push_back(SourceNode{token.kind, token, token, {}});
         }
         if (!expected.empty())
             throw Heresy("OMN130", "не закрыт разделитель «" + begin.value + "», ожидалось «" + string(expected) + "»", begin);
@@ -964,7 +995,10 @@ public:
     out += ",\"end\":" + std::to_string(end);
     out += ",\"line\":" + std::to_string(node.open.line);
     out += ",\"column\":" + std::to_string(node.open.column);
-    if (node.kind == "Group") out += ",\"close\":" + json_quote(node.close.value);
+    if (node.kind == "Group") {
+        out += ",\"close\":" + json_quote(node.close.value);
+        if (!node.role.empty()) out += ",\"role\":" + json_quote(node.role);
+    }
     out += ",\"children\":[";
     ЛОГИКА first = ИСТИНА;
     for (const auto& child : node.children) {
