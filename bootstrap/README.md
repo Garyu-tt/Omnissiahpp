@@ -1,4 +1,4 @@
-# Omnissiah++ R02: self-hosting bootstrap
+# Omnissiah++ R03: self-hosting bootstrap + core AST
 
 The native compiler lives in [`omnissiah_selfhost.omn`](omnissiah_selfhost.omn):
 **source code written in Omnissiah++** (with ordinary C++20 syntax where the
@@ -20,7 +20,7 @@ build/bootstrap/omnic-stage3 build examples/memory.omn -o build/relic
 build/relic
 ```
 
-The six bootstrap checks:
+The seven bootstrap checks:
 
 1. **Stage 0**: Python R01 transpiles `omnissiah_selfhost.omn`, C++ compiler
    compiles the result as `omnic-stage1`.
@@ -32,13 +32,17 @@ The six bootstrap checks:
    with stage 0 Python output. A digest is printed for the stable translation.
 6. Compile/run original `.omn` examples using stage 3. The test suite also runs
    a differential corpus of valid and invalid sources.
+7. Parse a Core program into JSON AST, compile that program from AST-derived
+   C++ and run it using the stage 3 compiler (again without Python).
 
 **What “self-hosted” means here:** after the stage-0 seed, the entire
 Omnissiah++ frontend (lexer, ritual checker and transpiler) is translated by a
 binary built from the same `.omn` source. Stages 1+ require no Python.
 
 **What it does not mean:** this is *not* an independently implemented machine-code
-backend or a complete C++ parser. C++ code generation uses a trusted existing
+backend or a complete C++ parser. The R03 Core parser handles an explicitly limited
+grammar; the compiler source itself is still bootstrapped through the legacy
+C++-compatible token translator. C++ code generation uses a trusted existing
 C++ toolchain. The ritual checks are lexical, not security controls. The C++
 source standard library and toolchain remain required for building new binaries.
 This is a standard *self-hosted source-to-source compiler*.
@@ -47,11 +51,29 @@ The native `check` / `emit` commands can run on other platforms where the binary
 has been built. The native `build` and `run` commands use POSIX process spawning,
 and have been tested on Linux; Windows native compilation is not yet supported.
 
+## R03 native syntax frontend
+
+`CoreParser` builds a tree of `ASTNode` nodes from native lexer tokens. Nodes
+include source position and children. `core-emit` generates a fresh C++20 source
+from this tree; `core-build` and `core-run` compile/execute that generated code.
+The old `emit`/`build`/`run` commands preserve the full C++-compatible dialect.
+
+```sh
+build/bootstrap/omnic-stage3 ast examples/core_syntax.omn -o build/core.ast.json
+build/bootstrap/omnic-stage3 core-run examples/core_syntax.omn
+```
+
+Unsupported C++ features are not silently represented as AST. Core is not a
+replacement for GCC/Clang and is not yet capable of parsing its own native
+compiler source. The stage-0 Python seed, C++ toolchain, runtime headers and
+POSIX process runner still have the documented roles.
+
 ## Roadmap
 
-- R03: modular compiler/frontend API, Unicode identifier rules, preprocessor
-  handling, independent syntax parsing and AST for ritual constructs.
-- R04: semantic/type checks and a larger standard library of Omnissiah-native
-  features; differential fuzzing and bootstrapping across two C++ toolchains.
-- R05: optional LLVM or alternative machine-code backend (external compiler
-  independence is a separate, significantly larger project).
+- R04: expand Core to the native compiler's own source grammar, separate
+  parser, semantic analysis and backend into stable units, add source spans,
+  differential fuzzing and richer type checks.
+- R05: make the **AST backend** itself self-host (stage 1 -> 2 -> 3 via Core)
+  with reproducible output; test GCC and Clang and full compiler fixtures.
+- Later: optional LLVM or independent machine-code backend. Removing the C++
+  toolchain dependency is a much larger project than frontend self-hosting.

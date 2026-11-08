@@ -374,6 +374,511 @@ int execute(const std::vector<string>& args) {
 #endif
 }
 
+// R03 core syntax tree: parsed by the self-hosted native compiler, not by Python.
+// This is a deliberately restricted grammar, not a pretend full C++ frontend.
+struct ASTNode {
+    string kind, value;
+    int line = 1, column = 1;
+    std::vector<ASTNode> children;
+};
+
+ASTNode ast_node(const string& kind, const string& value, const Token& at) {
+    ВЕРНУТЬ ASTNode{kind, value, at.line, at.column, {}};
+}
+
+class CoreParser {
+    std::vector<Token> tokens;
+    Token eof{"eof", "<eof>", 0, 0, 1, 1};
+    size_t pos = 0;
+    std::vector<string> classes;
+
+    const Token& peek(size_t skip = 0) const {
+        ВЕРНУТЬ pos + skip < tokens.size() ? tokens[pos + skip] : eof;
+    }
+    ЛОГИКА at(string_view word) const { ВЕРНУТЬ peek().value == word; }
+    ЛОГИКА take(string_view word) {
+        if (!at(word)) ВЕРНУТЬ ЛОЖЬ;
+        ++pos;
+        ВЕРНУТЬ ИСТИНА;
+    }
+    Token next() {
+        if (pos >= tokens.size()) throw Heresy("OMN110", "неожиданный конец программы", eof);
+        ВЕРНУТЬ tokens[pos++];
+    }
+    Token expect(string_view word) {
+        if (!at(word)) throw Heresy("OMN111", "ожидалось «" + string(word) + "», получено «" + peek().value + "»", peek());
+        ВЕРНУТЬ next();
+    }
+    Token identifier() {
+        if (peek().kind != "identifier") throw Heresy("OMN112", "ожидалось имя, получено «" + peek().value + "»", peek());
+        ВЕРНУТЬ next();
+    }
+    ЛОГИКА is_type(const string& word) const {
+        static const std::array<string_view, 18> types = {
+            "ЦЕЛОЕ", "ДРОБЬ", "СТРОКА", "ЛОГИКА", "НИЧТО", "АВТО",
+            "int", "double", "float", "bool", "void", "auto", "char",
+            "long", "short", "unsigned", "signed", "size_t"};
+        if (std::find(types.begin(), types.end(), word) != types.end()) ВЕРНУТЬ ИСТИНА;
+        ВЕРНУТЬ std::find(classes.begin(), classes.end(), word) != classes.end();
+    }
+    ЛОГИКА declaration_ahead() const {
+        if (is_type(peek().value) || at("ПОСТОЯННО") || at("const")) ВЕРНУТЬ ИСТИНА;
+        // A user type followed by another identifier is a declaration.
+        ВЕРНУТЬ peek().kind == "identifier" && peek(1).kind == "identifier";
+    }
+    string parse_type() {
+        string type;
+        if (at("ПОСТОЯННО") || at("const")) type = next().value + " ";
+        if (peek().kind != "identifier") throw Heresy("OMN113", "ожидался тип", peek());
+        type += next().value;
+        while (at(":") && peek(1).value == ":") {
+            next(); next();
+            type += "::" + identifier().value;
+        }
+        // Supports simple instantiated types, including nested closing > >.
+        if (take("<")) {
+            type += "<" + parse_type();
+            while (take(",")) type += "," + parse_type();
+            expect(">");
+            type += ">";
+        }
+        while (at("*") || at("&")) type += next().value;
+        ВЕРНУТЬ type;
+    }
+    string binary_operator() const {
+        string a = peek().value;
+        string b = peek(1).value;
+        if ((a == "=" || a == "!" || a == "<" || a == ">") && b == "=") ВЕРНУТЬ a + b;
+        if ((a == "&" && b == "&") || (a == "|" && b == "|")) ВЕРНУТЬ a + b;
+        if ((a == "+" || a == "-" || a == "*" || a == "/" || a == "%") && b == "=") ВЕРНУТЬ a + b;
+        if (a == "=" || a == "<" || a == ">" || a == "+" || a == "-" || a == "*" || a == "/" || a == "%") ВЕРНУТЬ a;
+        ВЕРНУТЬ "";
+    }
+    int precedence(const string& op) const {
+        if (op == "=" || op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=") ВЕРНУТЬ 1;
+        if (op == "||") ВЕРНУТЬ 2;
+        if (op == "&&") ВЕРНУТЬ 3;
+        if (op == "==" || op == "!=") ВЕРНУТЬ 4;
+        if (op == "<" || op == "<=" || op == ">" || op == ">=") ВЕРНУТЬ 5;
+        if (op == "+" || op == "-") ВЕРНУТЬ 6;
+        if (op == "*" || op == "/" || op == "%") ВЕРНУТЬ 7;
+        ВЕРНУТЬ -1;
+    }
+    ASTNode expression(int minimum = 1) {
+        ASTNode left = unary();
+        while (ИСТИНА) {
+            string op = binary_operator();
+            int priority = precedence(op);
+            if (priority < minimum) break;
+            Token loc = peek();
+            pos += op.size();
+            ЛОГИКА assign = priority == 1;
+            ASTNode right = expression(priority + (assign ? 0 : 1));
+            ASTNode result = ast_node("Binary", op, loc);
+            result.children.push_back(std::move(left));
+            result.children.push_back(std::move(right));
+            left = std::move(result);
+        }
+        if (minimum <= 2 && at("?")) {
+            Token loc = next();
+            ASTNode middle = expression();
+            expect(":");
+            ASTNode last = expression(2);
+            ASTNode choice = ast_node("Conditional", "?:", loc);
+            choice.children.push_back(std::move(left));
+            choice.children.push_back(std::move(middle));
+            choice.children.push_back(std::move(last));
+            left = std::move(choice);
+        }
+        ВЕРНУТЬ left;
+    }
+    ASTNode unary() {
+        string prefix = peek().value;
+        if ((prefix == "+" || prefix == "-") && peek(1).value == prefix) {
+            Token loc = next(); next();
+            ASTNode n = ast_node("Unary", prefix + prefix, loc);
+            n.children.push_back(unary());
+            ВЕРНУТЬ n;
+        }
+        if (prefix == "!" || prefix == "~" || prefix == "-" || prefix == "+" || prefix == "*" || prefix == "&") {
+            Token loc = next();
+            ASTNode n = ast_node("Unary", prefix, loc);
+            n.children.push_back(unary());
+            ВЕРНУТЬ n;
+        }
+        ASTNode left = primary();
+        while (ИСТИНА) {
+            if (at("(")) {
+                Token loc = next();
+                ASTNode call = ast_node("Call", "", loc);
+                call.children.push_back(std::move(left));
+                if (!at(")")) {
+                    call.children.push_back(expression());
+                    while (take(",")) call.children.push_back(expression());
+                }
+                expect(")");
+                left = std::move(call);
+            } else if (at("[")) {
+                Token loc = next();
+                ASTNode index = ast_node("Index", "", loc);
+                index.children.push_back(std::move(left));
+                index.children.push_back(expression());
+                expect("]");
+                left = std::move(index);
+            } else if (at(".") || (at("-") && peek(1).value == ">") || (at(":") && peek(1).value == ":")) {
+                Token loc = next();
+                string op = loc.value;
+                if (op == "-" || op == ":") op += next().value;
+                ASTNode member = ast_node("Member", op + identifier().value, loc);
+                member.children.push_back(std::move(left));
+                left = std::move(member);
+            } else if ((at("+") || at("-")) && peek(1).value == peek().value) {
+                Token loc = next(); next();
+                ASTNode post = ast_node("Postfix", loc.value + loc.value, loc);
+                post.children.push_back(std::move(left));
+                left = std::move(post);
+            } else break;
+        }
+        ВЕРНУТЬ left;
+    }
+    ASTNode primary() {
+        Token loc = peek();
+        if (take("(")) {
+            ASTNode inside = expression();
+            expect(")");
+            ВЕРНУТЬ inside;
+        }
+        if (loc.kind == "number" || loc.kind == "string" || loc.value == "ИСТИНА" || loc.value == "ЛОЖЬ" ||
+            loc.value == "true" || loc.value == "false") {
+            next();
+            ВЕРНУТЬ ast_node("Literal", loc.value, loc);
+        }
+        if (loc.kind == "identifier") {
+            next();
+            ВЕРНУТЬ ast_node("Name", loc.value, loc);
+        }
+        throw Heresy("OMN114", "ожидалось выражение, получено «" + loc.value + "»", loc);
+    }
+    ASTNode variable(ЛОГИКА semicolon) {
+        Token loc = peek();
+        string type = parse_type();
+        ASTNode declaration = ast_node("VariableDeclaration", type, loc);
+        while (ИСТИНА) {
+            Token name = identifier();
+            ASTNode var = ast_node("Variable", name.value, name);
+            if (take("=")) var.children.push_back(expression());
+            declaration.children.push_back(std::move(var));
+            if (!take(",")) break;
+        }
+        if (semicolon) expect(";");
+        ВЕРНУТЬ declaration;
+    }
+    ASTNode block() {
+        Token loc = expect("{");
+        ASTNode n = ast_node("Block", "", loc);
+        while (!at("}")) {
+            if (peek().kind == "eof") throw Heresy("OMN115", "не закрыт блок {", peek());
+            n.children.push_back(statement());
+        }
+        expect("}");
+        ВЕРНУТЬ n;
+    }
+    ASTNode statement() {
+        Token loc = peek();
+        if (at("{")) ВЕРНУТЬ block();
+        if (take("ЕСЛИ_ВОЛЯ_ОМНИССИИ") || take("if")) {
+            ASTNode n = ast_node("If", "", loc);
+            expect("("); n.children.push_back(expression()); expect(")");
+            n.children.push_back(statement());
+            if (take("ИНАЧЕ") || take("else")) n.children.push_back(statement());
+            ВЕРНУТЬ n;
+        }
+        if (take("ПОКА_ДУХ_НЕ_УСМИРЕН") || take("while")) {
+            ASTNode n = ast_node("While", "", loc);
+            expect("("); n.children.push_back(expression()); expect(")");
+            n.children.push_back(statement());
+            ВЕРНУТЬ n;
+        }
+        if (take("СВЯЩЕННЫЙ_ЦИКЛ") || take("for")) {
+            ASTNode n = ast_node("For", "", loc);
+            expect("(");
+            if (at(";")) n.children.push_back(ast_node("Empty", "", peek()));
+            else if (declaration_ahead()) n.children.push_back(variable(ЛОЖЬ));
+            else n.children.push_back(expression());
+            expect(";");
+            if (at(";")) n.children.push_back(ast_node("Empty", "", peek()));
+            else n.children.push_back(expression());
+            expect(";");
+            if (at(")")) n.children.push_back(ast_node("Empty", "", peek()));
+            else n.children.push_back(expression());
+            expect(")"); n.children.push_back(statement());
+            ВЕРНУТЬ n;
+        }
+        if (take("ВЕРНУТЬ") || take("return")) {
+            ASTNode n = ast_node("Return", "", loc);
+            if (!at(";")) n.children.push_back(expression());
+            expect(";");
+            ВЕРНУТЬ n;
+        }
+        if (take("ПРЕРВАТЬ") || take("break")) { expect(";"); ВЕРНУТЬ ast_node("Break", "", loc); }
+        if (take("ПРОДОЛЖИТЬ") || take("continue")) { expect(";"); ВЕРНУТЬ ast_node("Continue", "", loc); }
+        if (take(";")) ВЕРНУТЬ ast_node("Empty", "", loc);
+        if (declaration_ahead()) ВЕРНУТЬ variable(ИСТИНА);
+        ASTNode result = ast_node("ExpressionStatement", "", loc);
+        result.children.push_back(expression());
+        expect(";");
+        ВЕРНУТЬ result;
+    }
+    ASTNode declaration() {
+        Token loc = peek();
+        if (take("КЛАСС") || take("class") || take("СТРУКТУРА") || take("struct")) {
+            Token name = identifier();
+            classes.push_back(name.value);
+            ASTNode n = ast_node((loc.value == "СТРУКТУРА" || loc.value == "struct") ? "Struct" : "Class", name.value, loc);
+            expect("{");
+            while (!at("}")) {
+                if (peek().kind == "eof") throw Heresy("OMN115", "не закрыто тело класса", peek());
+                if (at("ПУБЛИЧНО") || at("ЧАСТНО") || at("ЗАЩИЩЕНО") ||
+                    at("public") || at("private") || at("protected")) {
+                    Token access = next(); expect(":");
+                    n.children.push_back(ast_node("Access", access.value, access));
+                } else n.children.push_back(declaration());
+            }
+            expect("}"); expect(";");
+            ВЕРНУТЬ n;
+        }
+        string type = parse_type();
+        Token name = identifier();
+        if (take("(")) {
+            ASTNode n = ast_node("Function", name.value, loc);
+            n.children.push_back(ast_node("ReturnType", type, loc));
+            if (!at(")")) {
+                while (ИСТИНА) {
+                    Token arg_start = peek();
+                    string arg_type = parse_type();
+                    Token arg_name = identifier();
+                    n.children.push_back(ast_node("Parameter", arg_type + " " + arg_name.value, arg_start));
+                    if (!take(",")) break;
+                }
+            }
+            expect(")");
+            if (take(";")) ВЕРНУТЬ n;
+            n.children.push_back(block());
+            ВЕРНУТЬ n;
+        }
+        ASTNode n = ast_node("VariableDeclaration", type, loc);
+        ASTNode var = ast_node("Variable", name.value, name);
+        if (take("=")) var.children.push_back(expression());
+        n.children.push_back(std::move(var));
+        while (take(",")) {
+            Token other = identifier();
+            ASTNode v = ast_node("Variable", other.value, other);
+            if (take("=")) v.children.push_back(expression());
+            n.children.push_back(std::move(v));
+        }
+        expect(";");
+        ВЕРНУТЬ n;
+    }
+
+public:
+    explicit CoreParser(const string& src) {
+        for (const auto& t : lex(src))
+            if (t.kind != "ws" && t.kind != "comment" && t.kind != "directive") tokens.push_back(t);
+        if (!tokens.empty()) {
+            eof.line = tokens.back().line;
+            eof.column = tokens.back().column + int(tokens.back().value.size());
+            eof.start = eof.end = tokens.back().end;
+        }
+    }
+    ASTNode program() {
+        ASTNode root{"Program", "Omnissiah++ core R03", 1, 1, {}};
+        while (peek().kind != "eof") {
+            Token loc = peek();
+            if (at("ВО_ИМЯ_ОМНИССИИ") || at("ДА_БУДЕТ_ВОЛЯ_МАШИНЫ")) {
+                root.children.push_back(ast_node("Ritual", next().value, loc));
+                expect(";");
+            } else if (at("ОСВЯТИТЬ") || at("ВОССЛАВИТЬ")) {
+                string action = next().value;
+                string target = identifier().value;
+                root.children.push_back(ast_node("Ritual", action + " " + target, loc));
+                expect(";");
+            } else root.children.push_back(declaration());
+        }
+        ВЕРНУТЬ root;
+    }
+};
+
+string json_quote(const string& value) {
+    const char* digits = "0123456789abcdef";
+    string out = "\"";
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) { out += "\\u00"; out += digits[c >> 4]; out += digits[c & 15]; }
+        else out += char(c);
+    }
+    ВЕРНУТЬ out + "\"";
+}
+
+НИЧТО append_json(const ASTNode& tree, string& result) {
+    result += "{\"kind\":" + json_quote(tree.kind) + ",\"value\":" + json_quote(tree.value);
+    result += ",\"line\":" + std::to_string(tree.line) + ",\"column\":" + std::to_string(tree.column);
+    result += ",\"children\":[";
+    ЛОГИКА first = ИСТИНА;
+    for (const auto& child : tree.children) {
+        if (!first) result += ',';
+        first = ЛОЖЬ;
+        append_json(child, result);
+    }
+    result += "]}";
+}
+
+string ast_json(const string& source) {
+    CoreParser parser(source);
+    string result;
+    ASTNode root = parser.program();
+    append_json(root, result);
+    ВЕРНУТЬ result + "\n";
+}
+
+// R03 core code generator: consumes AST (not text-substituted source).
+string canonical_type(const string& type) {
+    string out;
+    for (const auto& tok : lex(type)) {
+        auto found = KEYWORDS.find(tok.value);
+        out += tok.kind == "identifier" && found != KEYWORDS.end() ? found->second : tok.value;
+    }
+    ВЕРНУТЬ out;
+}
+
+string canonical_name(const string& name) {
+    auto it = KEYWORDS.find(name);
+    ВЕРНУТЬ it != KEYWORDS.end() ? it->second : name;
+}
+
+string emit_core_expr(const ASTNode& n) {
+    if (n.kind == "Name") ВЕРНУТЬ canonical_name(n.value);
+    if (n.kind == "Literal") {
+        if (n.value == "ИСТИНА") ВЕРНУТЬ "true";
+        if (n.value == "ЛОЖЬ") ВЕРНУТЬ "false";
+        ВЕРНУТЬ n.value;
+    }
+    if (n.kind == "Binary")
+        ВЕРНУТЬ "(" + emit_core_expr(n.children.at(0)) + " " + n.value + " " + emit_core_expr(n.children.at(1)) + ")";
+    if (n.kind == "Conditional")
+        ВЕРНУТЬ "(" + emit_core_expr(n.children.at(0)) + " ? " + emit_core_expr(n.children.at(1)) + " : " + emit_core_expr(n.children.at(2)) + ")";
+    if (n.kind == "Unary") ВЕРНУТЬ "(" + n.value + emit_core_expr(n.children.at(0)) + ")";
+    if (n.kind == "Postfix") ВЕРНУТЬ "(" + emit_core_expr(n.children.at(0)) + n.value + ")";
+    if (n.kind == "Member") {
+        string op = n.value.substr(0, 1);
+        if (n.value.rfind("->", 0) == 0 || n.value.rfind("::", 0) == 0) op = n.value.substr(0, 2);
+        string base = emit_core_expr(n.children.at(0));
+        ВЕРНУТЬ (op == "::" ? base : "(" + base + ")") + op + canonical_name(n.value.substr(op.size()));
+    }
+    if (n.kind == "Index") ВЕРНУТЬ emit_core_expr(n.children.at(0)) + "[" + emit_core_expr(n.children.at(1)) + "]";
+    if (n.kind == "Call") {
+        string out = emit_core_expr(n.children.at(0)) + "(";
+        for (size_t i = 1; i < n.children.size(); ++i) {
+            if (i != 1) out += ", ";
+            out += emit_core_expr(n.children.at(i));
+        }
+        ВЕРНУТЬ out + ")";
+    }
+    throw std::runtime_error("неизвестный AST-узел выражения: " + n.kind);
+}
+
+string emit_core_decl(const ASTNode& n, ЛОГИКА semicolon = ИСТИНА) {
+    string out = canonical_type(n.value) + " ";
+    for (size_t i = 0; i < n.children.size(); ++i) {
+        if (i) out += ", ";
+        const auto& var = n.children[i];
+        out += canonical_name(var.value);
+        if (!var.children.empty()) out += " = " + emit_core_expr(var.children[0]);
+    }
+    ВЕРНУТЬ out + (semicolon ? ";" : "");
+}
+
+string emit_core_stmt(const ASTNode& n);
+string emit_core_stmt(const ASTNode& n) {
+    if (n.kind == "VariableDeclaration") ВЕРНУТЬ emit_core_decl(n);
+    if (n.kind == "Block") {
+        string out = "{\n";
+        for (const auto& child : n.children) out += emit_core_stmt(child) + "\n";
+        ВЕРНУТЬ out + "}";
+    }
+    if (n.kind == "Return") ВЕРНУТЬ "return" + (n.children.empty() ? string("") : " " + emit_core_expr(n.children[0])) + ";";
+    if (n.kind == "Break") ВЕРНУТЬ "break;";
+    if (n.kind == "Continue") ВЕРНУТЬ "continue;";
+    if (n.kind == "Empty") ВЕРНУТЬ ";";
+    if (n.kind == "ExpressionStatement") ВЕРНУТЬ emit_core_expr(n.children.at(0)) + ";";
+    if (n.kind == "If") {
+        string out = "if (" + emit_core_expr(n.children.at(0)) + ") " + emit_core_stmt(n.children.at(1));
+        if (n.children.size() > 2) out += " else " + emit_core_stmt(n.children[2]);
+        ВЕРНУТЬ out;
+    }
+    if (n.kind == "While") ВЕРНУТЬ "while (" + emit_core_expr(n.children.at(0)) + ") " + emit_core_stmt(n.children.at(1));
+    if (n.kind == "For") {
+        const auto& init = n.children.at(0);
+        string a = init.kind == "Empty" ? "" : (init.kind == "VariableDeclaration" ? emit_core_decl(init, ЛОЖЬ) : emit_core_expr(init));
+        string b = n.children[1].kind == "Empty" ? "" : emit_core_expr(n.children[1]);
+        string c = n.children[2].kind == "Empty" ? "" : emit_core_expr(n.children[2]);
+        ВЕРНУТЬ "for (" + a + "; " + b + "; " + c + ") " + emit_core_stmt(n.children.at(3));
+    }
+    if (n.kind == "Function") {
+        string out = canonical_type(n.children.at(0).value) + " " + canonical_name(n.value) + "(";
+        for (size_t i = 1; i < n.children.size(); ++i) {
+            const auto& param = n.children[i];
+            if (param.kind != "Parameter") break;
+            if (i > 1) out += ", ";
+            // The parameter value stores its type and name separated by the last space.
+            size_t split = param.value.rfind(' ');
+            out += canonical_type(param.value.substr(0, split)) + " " + canonical_name(param.value.substr(split + 1));
+        }
+        out += ")";
+        if (!n.children.empty() && n.children.back().kind == "Block") out += " " + emit_core_stmt(n.children.back());
+        else out += ";";
+        ВЕРНУТЬ out;
+    }
+    if (n.kind == "Access") ВЕРНУТЬ canonical_name(n.value) + ":";
+    if (n.kind == "Struct" || n.kind == "Class") {
+        string out = (n.kind == "Class" ? "class " : "struct ") + n.value + " {\n";
+        for (const auto& child : n.children) out += emit_core_stmt(child) + "\n";
+        ВЕРНУТЬ out + "};";
+    }
+    if (n.kind == "Ritual") ВЕРНУТЬ "";
+    throw std::runtime_error("неизвестный AST-узел: " + n.kind);
+}
+
+string emit_core_cpp(const string& source, const string& filename) {
+    CoreParser parser(source);
+    ASTNode root = parser.program();
+    string headers;
+    for (const auto& t : lex(source)) {
+        if (t.kind == "directive") {
+            string value = t.value;
+            size_t i = value.find_first_not_of(" \t\r");
+            if (i == string::npos || value.compare(i, 8, "#include") != 0)
+                throw Heresy("OMN116", "core-emit поддерживает только директивы #include", t);
+            headers += value;
+            if (headers.back() != '\n') headers += '\n';
+        }
+    }
+    string out = RUNTIME + "\n" + headers;
+    // Report diagnostics at the original source file whenever C++ rejects the result.
+    string escaped;
+    for (char c : filename) {
+        if (c == '\\' || c == '"') escaped += '\\';
+        escaped += c == '\n' ? ' ' : c;
+    }
+    out += "#line 1 \"" + escaped + "\"\n";
+    for (const auto& child : root.children) {
+        if (child.kind != "Ritual") out += emit_core_stmt(child) + "\n";
+    }
+    ВЕРНУТЬ out;
+}
+
 struct Options {
     string action, source, output, cxx = "g++", std_flag = "c++20", optimize = "-O2", keep_cpp;
     std::vector<string> run_args;
@@ -382,14 +887,14 @@ struct Options {
 
 Options parse_args(int argc, char** argv) {
     if (argc == 2 && string(argv[1]) == "--version") {
-        std::cout << "Omnissiah++ native R02 (self-hosting)\n";
+        std::cout << "Omnissiah++ native R03 (self-hosting + core AST)\n";
         std::exit(0);
     }
-    if (argc < 3) throw std::runtime_error("использование: omnic <check|emit|build|run> file.omn [-o file] [--dark-age] [--cxx g++]");
+    if (argc < 3) throw std::runtime_error("использование: omnic <check|ast|core-emit|core-build|core-run|emit|build|run> file.omn [-o file] [--dark-age] [--cxx g++]");
     Options opts;
     opts.action = argv[1];
     opts.source = argv[2];
-    if (opts.action != "check" && opts.action != "emit" && opts.action != "build" && opts.action != "run")
+    if (opts.action != "check" && opts.action != "ast" && opts.action != "core-emit" && opts.action != "core-build" && opts.action != "core-run" && opts.action != "emit" && opts.action != "build" && opts.action != "run")
         throw std::runtime_error("неизвестная команда: " + opts.action);
     for (int i = 3; i < argc; ++i) {
         string a = argv[i];
@@ -447,8 +952,23 @@ struct Scratch {
 
 int run(const Options& opt) {
     fs::path absolute = fs::absolute(opt.source);
-    string translated = transpile(read_file(opt.source), absolute.lexically_normal().string(), opt.dark_age);
+    string source = read_file(opt.source);
+    string translated = transpile(source, absolute.lexically_normal().string(), opt.dark_age);
     if (opt.dark_age) std::cerr << "⚠ ТЁМНАЯ ЭРА ТЕХНОЛОГИЙ: проверки ритуалов отключены.\n";
+    if (opt.action == "ast") {
+        string json = ast_json(source);
+        if (opt.output.empty()) std::cout << json;
+        else write_file(opt.output, json);
+        ВЕРНУТЬ 0;
+    }
+    if (opt.action == "core-emit" || opt.action == "core-build" || opt.action == "core-run") {
+        translated = emit_core_cpp(source, absolute.lexically_normal().string());
+        if (opt.action == "core-emit") {
+            if (opt.output.empty()) std::cout << translated;
+            else write_file(opt.output, translated);
+            ВЕРНУТЬ 0;
+        }
+    }
     if (opt.action == "check") {
         std::cout << "Омниссия благословил синтаксис: " << opt.source << " (ритуалы проверены)\n";
         ВЕРНУТЬ 0;
@@ -461,13 +981,13 @@ int run(const Options& opt) {
     Scratch scratch;
     fs::path cpp = scratch.directory / "translation.cpp";
     fs::path out = opt.output.empty() ? fs::path(opt.source).replace_extension("") : fs::path(opt.output);
-    if (opt.action == "run") out = scratch.directory / "ritual";
+    if (opt.action == "run" || opt.action == "core-run") out = scratch.directory / "ritual";
     write_file(cpp, translated);
     if (!opt.keep_cpp.empty()) write_file(opt.keep_cpp, translated);
     if (!out.parent_path().empty()) fs::create_directories(out.parent_path());
     int rc = execute({opt.cxx, "-std=" + opt.std_flag, opt.optimize, "-Wall", "-Wextra", "-pedantic", cpp.string(), "-o", out.string()});
     if (rc) ВЕРНУТЬ rc;
-    if (opt.action == "build") {
+    if (opt.action == "build" || opt.action == "core-build") {
         std::cout << "Компиляция завершена: " << out.string() << '\n';
         ВЕРНУТЬ 0;
     }
@@ -477,7 +997,6 @@ int run(const Options& opt) {
 }
 
 } // namespace omni_native
-
 ЛИТАНИЯ главная(int argc, char** argv) {
     try {
         ВЕРНУТЬ omni_native::run(omni_native::parse_args(argc, argv));
