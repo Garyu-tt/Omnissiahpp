@@ -71,6 +71,34 @@ int bless(int n) { return n + 1; }
         self.assertIn("CallableOrControlBody", roles)
         self.assertEqual(self.invoke("source-emit", src, "--dark-age").returncode, 0)
 
+    def test_r05_control_body_roles_and_lossless_roundtrip(self):
+        src = self.source('''int main() {
+    if (true) { return 1; } else { return 2; }
+    for (int i=0; i<2; ++i) { if (i) { break; } }
+    while (false) { continue; }
+    auto f = [](int x) { return x + 1; };
+}
+''')
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        roles = [n.get("role") for n in self.walk(tree) if n["kind"] == "Group"]
+        self.assertGreaterEqual(roles.count("ControlBody"), 5)
+        self.assertIn("CallableOrControlBody", roles)
+        legacy = self.invoke("emit", src, "--dark-age")
+        structured = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(structured.returncode, 0, structured.stderr)
+        self.assertEqual(structured.stdout, legacy.stdout)
+
+    def test_r05_control_keywords_in_comments_are_not_roles(self):
+        src = self.source('''int f() /* if for while */ { return 0; }
+''')
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        roles = [n.get("role") for n in self.walk(tree) if n["kind"] == "Group"]
+        self.assertNotIn("ControlBody", roles)
+
     def test_source_emitter_matches_legacy_byte_for_byte(self):
         for source in [SELF, *(ROOT / "examples").glob("*.omn")]:
             with self.subTest(source=source.name):

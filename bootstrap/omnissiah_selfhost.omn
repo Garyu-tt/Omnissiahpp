@@ -932,11 +932,34 @@ class SourceParser {
             if (word == "class" || word == "КЛАСС" || word == "struct" ||
                 word == "СТРУКТУРА" || word == "union") ВЕРНУТЬ "TypeBody";
         }
-        for (size_t i = siblings.size(); i > 0; --i) {
+        // A parenthesized header can be a control statement or a callable.
+        // Inspect only significant siblings in the current statement; tokens
+        // inside strings/comments and preceding statements must not count.
+        std::vector<const SourceNode*> header;
+        for (size_t i = siblings.size(); i > 0 && header.size() < 64; --i) {
             const SourceNode& n = siblings[i - 1];
-            if (n.open.kind == "ws" || n.open.kind == "comment") continue;
-            if (n.kind == "Group" && n.open.value == "(") ВЕРНУТЬ "CallableOrControlBody";
-            break;
+            if (n.open.kind == "ws" || n.open.kind == "comment" ||
+                n.open.kind == "directive") continue;
+            if (n.open.value == ";" || n.open.value == "}" || n.open.value == "{") break;
+            header.push_back(&n);
+        }
+        std::reverse(header.begin(), header.end());
+        if (!header.empty()) {
+            const string& first = header.front()->open.value;
+            if (first == "else" || first == "ИНАЧЕ" || first == "do")
+                ВЕРНУТЬ "ControlBody";
+            const SourceNode& last = *header.back();
+            if (last.kind == "Group" && last.open.value == "(") {
+                for (const auto* node : header) {
+                    const string& word = node->open.value;
+                    if (word == "if" || word == "ЕСЛИ_ВОЛЯ_ОМНИССИИ" ||
+                        word == "for" || word == "СВЯЩЕННЫЙ_ЦИКЛ" ||
+                        word == "while" || word == "ПОКА_ДУХ_НЕ_УСМИРЕН" ||
+                        word == "switch" || word == "catch")
+                        ВЕРНУТЬ "ControlBody";
+                }
+                ВЕРНУТЬ "CallableOrControlBody";
+            }
         }
         ВЕРНУТЬ "UnclassifiedBody";
     }
