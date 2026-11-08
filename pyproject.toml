@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnissiahpp"
+version = "0.1.0"
+description = "Omnissiah++ ritual-aware C++ transpiler"
+requires-python = ">=3.10"
+license = "MIT"
+
+[project.scripts]
+omnissiah = "omnissiah:main"
+
+[tool.setuptools]
+py-modules = ["omnissiah"]
