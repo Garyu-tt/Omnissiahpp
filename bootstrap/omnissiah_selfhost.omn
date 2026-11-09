@@ -770,6 +770,9 @@ class CoreParser {
             Token name = identifier();
             ASTNode var = ast_node("Variable", name.value, name);
             if (take("=")) var.children.push_back(expression());
+            if (std::any_of(declaration.children.begin(), declaration.children.end(),
+                            [&](const ASTNode& previous) { ВЕРНУТЬ previous.value == name.value; }))
+                throw Heresy("OMN118", "повторное имя переменной «" + name.value + "»", name);
             declaration.children.push_back(std::move(var));
             if (!take(",")) break;
         }
@@ -879,6 +882,9 @@ class CoreParser {
         n.children.push_back(std::move(var));
         while (take(",")) {
             Token other = identifier();
+            if (std::any_of(n.children.begin(), n.children.end(),
+                            [&](const ASTNode& previous) { ВЕРНУТЬ previous.value == other.value; }))
+                throw Heresy("OMN118", "повторное имя переменной «" + other.value + "»", other);
             ASTNode v = ast_node("Variable", other.value, other);
             if (take("=")) v.children.push_back(expression());
             n.children.push_back(std::move(v));
