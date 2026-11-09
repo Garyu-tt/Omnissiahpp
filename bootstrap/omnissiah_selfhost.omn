@@ -1119,10 +1119,25 @@ class SourceParser {
             words.push_back(n.open.value);
         }
         std::reverse(words.begin(), words.end());
-        for (const auto& word : words) {
-            if (word == "namespace" || word == "ПРОСТРАНСТВО") ВЕРНУТЬ "NamespaceBody";
-            if (word == "class" || word == "КЛАСС" || word == "struct" ||
-                word == "СТРУКТУРА" || word == "union") ВЕРНУТЬ "TypeBody";
+        // A 'class' inside template<class T> belongs to the template
+        // parameter list, not to the declaration whose body follows.
+        // Require a declaration-leading keyword instead of searching every
+        // word in the header (which also mislabels function bodies).
+        size_t declaration = 0;
+        if (!words.empty() && (words[0] == "inline" || words[0] == "ИНЛАЙН"))
+            declaration = 1;
+        if (declaration < words.size()) {
+            const string& first = words[declaration];
+            if (first == "namespace" || first == "ПРОСТРАНСТВО")
+                ВЕРНУТЬ "NamespaceBody";
+            if (first == "class" || first == "КЛАСС" ||
+                first == "struct" || first == "СТРУКТУРА" ||
+                first == "union")
+                ВЕРНУТЬ "TypeBody";
+            if (first == "enum" && declaration + 1 < words.size() &&
+                (words[declaration + 1] == "class" ||
+                 words[declaration + 1] == "struct"))
+                ВЕРНУТЬ "TypeBody";
         }
         // A parenthesized header can be a control statement or a callable.
         // Inspect only significant siblings in the current statement; tokens
