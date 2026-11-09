@@ -1096,6 +1096,7 @@ struct SourceNode {
     string function_name;
     string return_type;
     std::vector<std::pair<string, string>> parameters;
+    std::vector<std::pair<size_t, size_t>> parameter_spans;
 };
 
 class SourceParser {
@@ -1252,6 +1253,7 @@ class SourceParser {
                                     }
                                     if (i != p.size() - 1) ВЕРНУТЬ ЛОЖЬ;
                                     child.parameters.push_back({type_name, p.back()->open.value});
+                                    child.parameter_spans.push_back({p.front()->open.start, p.back()->open.end});
                                     ВЕРНУТЬ ИСТИНА;
                                 };
                                 for (const auto& item : args.children) {
@@ -1267,7 +1269,10 @@ class SourceParser {
                                 } else if (valid && !args.children.empty() && part.empty()) {
                                     valid = ЛОЖЬ; // trailing comma
                                 }
-                                if (!valid) child.parameters.clear();
+                                if (!valid) {
+                                    child.parameters.clear();
+                                    child.parameter_spans.clear();
+                                }
                             }
                         }
                     }
@@ -1322,6 +1327,13 @@ public:
                 first_parameter = ЛОЖЬ;
                 out += "{\"type\":" + json_quote(parameter.first) +
                        ",\"name\":" + json_quote(parameter.second) + "}";
+            }
+            out += "]";
+            out += ",\"parameter_spans\":[";
+            for (size_t i = 0; i < node.parameter_spans.size(); ++i) {
+                if (i) out += ',';
+                out += "{\"start\":" + std::to_string(node.parameter_spans[i].first) +
+                       ",\"end\":" + std::to_string(node.parameter_spans[i].second) + "}";
             }
             out += "]";
         }

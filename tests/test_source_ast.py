@@ -149,6 +149,29 @@ auto lambda = [](int n) { return n + 1; };
         self.assertEqual(structured.returncode, legacy.returncode, structured.stderr)
         self.assertEqual(structured.stdout, legacy.stdout)
 
+    def test_r05_parameter_source_spans_are_utf8_byte_offsets(self):
+        source = "int bless(const int& value, ЦЕЛОЕ число) { return value; }\n"
+        src = self.source(source)
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        functions = [n for n in self.walk(json.loads(result.stdout))
+                     if n.get("function_name") == "bless"]
+        self.assertEqual(len(functions), 1)
+        node = functions[0]
+        self.assertEqual(len(node["parameters"]), len(node["parameter_spans"]))
+        raw = source.encode("utf-8")
+        fragments = [raw[p["start"]:p["end"]].decode("utf-8")
+                     for p in node["parameter_spans"]]
+        self.assertEqual(fragments, ["const int& value", "ЦЕЛОЕ число"])
+
+        unsupported = self.source("int f(int a, std::vector<int> b) { return a; }")
+        result = self.invoke("source-ast", unsupported, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        node = next(n for n in self.walk(json.loads(result.stdout))
+                    if n.get("function_name") == "f")
+        self.assertEqual(node["parameters"], [])
+        self.assertEqual(node["parameter_spans"], [])
+
     def test_r05_simple_parameter_metadata(self):
         src = self.source("""int add(int a, int b) { return a + b; }
 ЦЕЛОЕ blessed(ЦЕЛОЕ value) { ВЕРНУТЬ value; }
