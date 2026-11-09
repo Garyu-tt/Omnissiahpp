@@ -172,6 +172,30 @@ auto lambda = [](int n) { return n + 1; };
         self.assertEqual(node["parameters"], [])
         self.assertEqual(node["parameter_spans"], [])
 
+    def test_r05_parameter_type_and_name_byte_spans(self):
+        source = "int bless(const int& value, ЦЕЛОЕ число) { return value; }\n"
+        result = self.invoke("source-ast", self.source(source), "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        node = next(n for n in self.walk(json.loads(result.stdout))
+                    if n.get("function_name") == "bless")
+        raw = source.encode("utf-8")
+        for key, expected in (
+            ("parameter_type_spans", ["const int&", "ЦЕЛОЕ"]),
+            ("parameter_name_spans", ["value", "число"]),
+        ):
+            self.assertEqual(
+                [raw[span["start"]:span["end"]].decode("utf-8")
+                 for span in node[key]], expected)
+        unsupported = self.invoke(
+            "source-ast",
+            self.source("int f(int a, std::vector<int> b) { return a; }"),
+            "--dark-age")
+        self.assertEqual(unsupported.returncode, 0, unsupported.stderr)
+        node = next(n for n in self.walk(json.loads(unsupported.stdout))
+                    if n.get("function_name") == "f")
+        self.assertEqual(node["parameter_type_spans"], [])
+        self.assertEqual(node["parameter_name_spans"], [])
+
     def test_r05_simple_parameter_metadata(self):
         src = self.source("""int add(int a, int b) { return a + b; }
 ЦЕЛОЕ blessed(ЦЕЛОЕ value) { ВЕРНУТЬ value; }
