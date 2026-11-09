@@ -1097,6 +1097,8 @@ struct SourceNode {
     string return_type;
     std::vector<std::pair<string, string>> parameters;
     std::vector<std::pair<size_t, size_t>> parameter_spans;
+    std::vector<std::pair<size_t, size_t>> parameter_type_spans;
+    std::vector<std::pair<size_t, size_t>> parameter_name_spans;
 };
 
 class SourceParser {
@@ -1254,6 +1256,8 @@ class SourceParser {
                                     if (i != p.size() - 1) ВЕРНУТЬ ЛОЖЬ;
                                     child.parameters.push_back({type_name, p.back()->open.value});
                                     child.parameter_spans.push_back({p.front()->open.start, p.back()->open.end});
+                                    child.parameter_type_spans.push_back({p.front()->open.start, p[p.size() - 2]->open.end});
+                                    child.parameter_name_spans.push_back({p.back()->open.start, p.back()->open.end});
                                     ВЕРНУТЬ ИСТИНА;
                                 };
                                 for (const auto& item : args.children) {
@@ -1272,6 +1276,8 @@ class SourceParser {
                                 if (!valid) {
                                     child.parameters.clear();
                                     child.parameter_spans.clear();
+                                    child.parameter_type_spans.clear();
+                                    child.parameter_name_spans.clear();
                                 }
                             }
                         }
@@ -1336,6 +1342,17 @@ public:
                        ",\"end\":" + std::to_string(node.parameter_spans[i].second) + "}";
             }
             out += "]";
+            auto emit_spans = [&out](const string& key, const std::vector<std::pair<size_t, size_t>>& spans) {
+                out += "," + json_quote(key) + ":[";
+                for (size_t i = 0; i < spans.size(); ++i) {
+                    if (i) out += ',';
+                    out += "{\"start\":" + std::to_string(spans[i].first) +
+                           ",\"end\":" + std::to_string(spans[i].second) + "}";
+                }
+                out += "]";
+            };
+            emit_spans("parameter_type_spans", node.parameter_type_spans);
+            emit_spans("parameter_name_spans", node.parameter_name_spans);
         }
     }
     out += ",\"children\":[";
