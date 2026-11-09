@@ -173,7 +173,7 @@ auto lambda = [](int n) { return n + 1; };
         self.assertEqual(node["parameter_spans"], [])
 
     def test_r05_parameter_type_and_name_byte_spans(self):
-        source = "int bless(const int& value, ЦЕЛОЕ число) { return value; }\\n"
+        source = "int bless(const int& value, ЦЕЛОЕ число) { return value; }\n"
         result = self.invoke("source-ast", self.source(source), "--dark-age")
         self.assertEqual(result.returncode, 0, result.stderr)
         node = next(n for n in self.walk(json.loads(result.stdout))
