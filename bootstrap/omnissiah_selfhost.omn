@@ -893,6 +893,37 @@ class CoreParser {
         ВЕРНУТЬ n;
     }
 
+    // Core-only lexical scope check. Each block owns its declarations; nested blocks may shadow.
+    НИЧТО validate_scope(const ASTNode& scope) const {
+        std::map<string, Token> names;
+        for (const auto& child : scope.children) {
+            if (child.kind == "VariableDeclaration") {
+                for (const auto& var : child.children) {
+                    if (var.kind != "Variable") continue;
+                    Token at;
+                    at.kind = "identifier";
+                    at.value = var.value;
+                    at.line = var.line;
+                    at.column = var.column;
+                    if (names.count(var.value))
+                        throw Heresy("OMN119", "повторное объявление переменной «" + var.value + "» в одной области видимости", at);
+                    names.emplace(var.value, at);
+                }
+            } else if (child.kind == "Block") {
+                validate_scope(child);
+            } else if (child.kind == "Function") {
+                for (const auto& part : child.children)
+                    if (part.kind == "Block") validate_scope(part);
+            } else if (child.kind == "For") {
+                // A for-init declaration belongs to the loop, not the enclosing block.
+                validate_scope(child);
+            } else if (child.kind == "If" || child.kind == "While") {
+                for (const auto& part : child.children)
+                    if (part.kind == "Block" || part.kind == "For") validate_scope(part);
+            }
+        }
+    }
+
 public:
     explicit CoreParser(const string& src) {
         for (const auto& t : lex(src))
@@ -917,6 +948,7 @@ public:
                 expect(";");
             } else root.children.push_back(declaration());
         }
+        validate_scope(root);
         ВЕРНУТЬ root;
     }
 };
