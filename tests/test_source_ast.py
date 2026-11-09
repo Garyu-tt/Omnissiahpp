@@ -169,7 +169,10 @@ auto lambda = [](int n) { return n + 1; };
                          [{"type": "ЦЕЛОЕ", "name": "value"}])
         self.assertEqual(functions["zero"]["parameters"], [])
         self.assertEqual(functions["explicit_void"]["parameters"], [])
-        self.assertEqual(functions["complex"]["parameters"], [])
+        # Qualified references are now supported; keep this regression aligned
+        # with the expanded grammar instead of expecting an empty signature.
+        self.assertEqual(functions["complex"]["parameters"],
+                         [{"type": "const int&", "name": "value"}])
         self.assertNotIn("lambda", functions)
         old = self.invoke("emit", src, "--dark-age")
         new = self.invoke("source-emit", src, "--dark-age")
