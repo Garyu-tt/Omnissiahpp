@@ -1150,6 +1150,25 @@ class SourceParser {
                         word == "switch" || word == "catch")
                         ВЕРНУТЬ "ControlBody";
                 }
+                // Recognize only unambiguous simple function definitions.
+                // Lambdas, constructors and complex declarators remain ambiguous.
+                // Header shape: <return-type> <name> (<parameters>) { ... }
+                if (header.size() >= 3) {
+                    const SourceNode& name = *header[header.size() - 2];
+                    const SourceNode& type = *header[header.size() - 3];
+                    if (name.open.kind == "identifier" &&
+                        type.open.kind == "identifier" &&
+                        name.open.value != "operator" &&
+                        type.open.value != "return" &&
+                        type.open.value != "ВЕРНУТЬ" &&
+                        type.open.value != "new" &&
+                        type.open.value != "НОВОЕ" &&
+                        type.open.value != "delete" &&
+                        type.open.value != "УДАЛИТЬ" &&
+                        type.open.value != "co_return" &&
+                        type.open.value != "throw")
+                        ВЕРНУТЬ "FunctionBody";
+                }
                 ВЕРНУТЬ "CallableOrControlBody";
             }
         }

@@ -68,7 +68,7 @@ int bless(int n) { return n + 1; }
         roles = [n.get("role") for n in self.walk(tree) if n["kind"] == "Group"]
         self.assertIn("NamespaceBody", roles)
         self.assertIn("TypeBody", roles)
-        self.assertIn("CallableOrControlBody", roles)
+        self.assertIn("FunctionBody", roles)
         self.assertEqual(self.invoke("source-emit", src, "--dark-age").returncode, 0)
 
     def test_r05_control_body_roles_and_lossless_roundtrip(self):
@@ -84,11 +84,28 @@ int bless(int n) { return n + 1; }
         tree = json.loads(result.stdout)
         roles = [n.get("role") for n in self.walk(tree) if n["kind"] == "Group"]
         self.assertGreaterEqual(roles.count("ControlBody"), 5)
-        self.assertIn("CallableOrControlBody", roles)
+        self.assertIn("FunctionBody", roles)
         legacy = self.invoke("emit", src, "--dark-age")
         structured = self.invoke("source-emit", src, "--dark-age")
         self.assertEqual(structured.returncode, 0, structured.stderr)
         self.assertEqual(structured.stdout, legacy.stdout)
+
+    def test_r05_function_role_is_conservative(self):
+        src = self.source("""int add(int a, int b) { return a + b; }
+auto lambda = [](int n) { return n + 1; };
+int caller() { return add(1, 2); }
+""")
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        roles = [n.get("role") for n in self.walk(tree)
+                 if n["kind"] == "Group" and n["value"] == "{"]
+        self.assertEqual(roles.count("FunctionBody"), 2)
+        self.assertEqual(roles.count("CallableOrControlBody"), 1)
+        old = self.invoke("emit", src, "--dark-age")
+        new = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(new.returncode, 0, new.stderr)
+        self.assertEqual(new.stdout, old.stdout)
 
     def test_r05_control_keywords_in_comments_are_not_roles(self):
         src = self.source('''int f() /* if for while */ { return 0; }
