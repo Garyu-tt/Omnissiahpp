@@ -149,6 +149,33 @@ auto lambda = [](int n) { return n + 1; };
         self.assertEqual(structured.returncode, legacy.returncode, structured.stderr)
         self.assertEqual(structured.stdout, legacy.stdout)
 
+    def test_r05_simple_parameter_metadata(self):
+        src = self.source("""int add(int a, int b) { return a + b; }
+ЦЕЛОЕ blessed(ЦЕЛОЕ value) { ВЕРНУТЬ value; }
+int zero() { return 0; }
+int explicit_void(void) { return 0; }
+int complex(const int& value) { return value; }
+auto lambda = [](int n) { return n + 1; };
+""")
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        functions = {n["function_name"]: n for n in self.walk(tree)
+                     if n.get("role") == "FunctionBody" and n.get("function_name")}
+        self.assertEqual(functions["add"]["parameters"],
+                         [{"type": "int", "name": "a"},
+                          {"type": "int", "name": "b"}])
+        self.assertEqual(functions["blessed"]["parameters"],
+                         [{"type": "ЦЕЛОЕ", "name": "value"}])
+        self.assertEqual(functions["zero"]["parameters"], [])
+        self.assertEqual(functions["explicit_void"]["parameters"], [])
+        self.assertEqual(functions["complex"]["parameters"], [])
+        self.assertNotIn("lambda", functions)
+        old = self.invoke("emit", src, "--dark-age")
+        new = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(new.returncode, old.returncode, new.stderr)
+        self.assertEqual(new.stdout, old.stdout)
+
     def test_r05_control_keywords_in_comments_are_not_roles(self):
         src = self.source('''int f() /* if for while */ { return 0; }
 ''')
