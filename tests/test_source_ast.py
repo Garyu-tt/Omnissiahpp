@@ -107,6 +107,28 @@ int caller() { return add(1, 2); }
         self.assertEqual(new.returncode, 0, new.stderr)
         self.assertEqual(new.stdout, old.stdout)
 
+    def test_r05_template_parameter_class_does_not_mask_function(self):
+        src = self.source("""template<class T>
+T identity(T value) { return value; }
+template<typename T, class Alloc>
+int count(T value) { return 1; }
+class Shrine { int charge; };
+inline namespace Ritual { int x; }
+enum class Relic { One, Two };
+""")
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        roles = [n.get("role") for n in self.walk(tree)
+                 if n["kind"] == "Group" and n["value"] == "{"]
+        self.assertEqual(roles.count("FunctionBody"), 2)
+        self.assertEqual(roles.count("TypeBody"), 2)
+        self.assertEqual(roles.count("NamespaceBody"), 1)
+        legacy = self.invoke("emit", src, "--dark-age")
+        structured = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(structured.returncode, legacy.returncode, structured.stderr)
+        self.assertEqual(structured.stdout, legacy.stdout)
+
     def test_r05_control_keywords_in_comments_are_not_roles(self):
         src = self.source('''int f() /* if for while */ { return 0; }
 ''')
