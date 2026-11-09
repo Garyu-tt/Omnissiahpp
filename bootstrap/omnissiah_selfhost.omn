@@ -856,10 +856,14 @@ class CoreParser {
             ASTNode n = ast_node("Function", name.value, loc);
             n.children.push_back(ast_node("ReturnType", type, loc));
             if (!at(")")) {
+                std::vector<string> parameter_names;
                 while (ИСТИНА) {
                     Token arg_start = peek();
                     string arg_type = parse_type();
                     Token arg_name = identifier();
+                    if (std::find(parameter_names.begin(), parameter_names.end(), arg_name.value) != parameter_names.end())
+                        throw Heresy("OMN117", "повторное имя параметра «" + arg_name.value + "»", arg_name);
+                    parameter_names.push_back(arg_name.value);
                     n.children.push_back(ast_node("Parameter", arg_type + " " + arg_name.value, arg_start));
                     if (!take(",")) break;
                 }

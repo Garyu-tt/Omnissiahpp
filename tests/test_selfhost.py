@@ -92,6 +92,33 @@ class SelfHostingTests(unittest.TestCase):
     def test_dark_age_differential(self):
         self.check_parity('ЛИТАНИЯ главная(){ МОЛИТВА("Факт: 42"); ВЕРНУТЬ 0; }', "dark.omn", True)
 
+    def test_core_duplicate_parameter_diagnostic(self):
+        cases = [
+            ("int sum(int value, int value) { return value; }", "value"),
+            ("ЦЕЛОЕ sum(ЦЕЛОЕ число, ЦЕЛОЕ число) { ВЕРНУТЬ число; }", "число"),
+        ]
+        for i, (source, name) in enumerate(cases):
+            with self.subTest(name=name):
+                path = self.dir / f"duplicate-parameter-{i}.omn"
+                path.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    [str(self.compiler), "ast", str(path), "--dark-age"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("OMN117", result.stderr)
+                self.assertIn(name, result.stderr)
+
+        valid = self.dir / "distinct-parameters.omn"
+        valid.write_text("int sum(int first, int second) { return first + second; }",
+                         encoding="utf-8")
+        result = subprocess.run(
+            [str(self.compiler), "ast", str(valid), "--dark-age"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"kind":"Function"', result.stdout)
+
     def test_real_three_generation_bootstrap(self):
         result = subprocess.run(["bash", str(ROOT / "scripts" / "bootstrap.sh"), str(self.dir / "stages")],
                                 capture_output=True, text=True)
