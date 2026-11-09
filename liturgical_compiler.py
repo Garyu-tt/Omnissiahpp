@@ -28,12 +28,12 @@ def demand_litany(stage: str) -> bool:
     prayers = LITANIES[stage]
     index = secrets.randbelow(len(prayers))
     prayer = prayers[index]
-    print(f"\\n⚙ {CATEGORY_TITLES[stage].upper()} [{index + 1:02d}/10]")
+    print(f"\n⚙ {CATEGORY_TITLES[stage].upper()} [{index + 1:02d}/10]")
     print(prayer)
     try:
         response = input("Повтори молитву дословно для продолжения: ")
     except (EOFError, KeyboardInterrupt):
-        print("\\nOMNL001: литания не произнесена; обряд остановлен.", file=sys.stderr)
+        print("\nOMNL001: литания не произнесена; обряд остановлен.", file=sys.stderr)
         return False
     if response != prayer:
         print("OMNL002: молитва искажена; обряд остановлен.", file=sys.stderr)
@@ -51,11 +51,11 @@ def original_cli(action: str, source: Path, dialect: str, *extra: str) -> list[s
 
 def wrap_runtime(cpp: str) -> str:
     """Rename only the application's main, then inject the unskippable entrypoint."""
-    before, separator, after = cpp.partition("\\n#line 1 ")
+    before, separator, after = cpp.partition("\n#line 1 ")
     if not separator:
         raise ValueError("OMNL003: compiler output has no source #line marker")
 
-    prayers = ",\\n".join("        " + json.dumps(line, ensure_ascii=False)
+    prayers = ",\n".join("        " + json.dumps(line, ensure_ascii=False)
                            for line in LITANIES["launch"])
     entry = r"""
 #undef main
@@ -85,27 +85,27 @@ int main(int argc, char** argv) {
     std::uniform_int_distribution<int> pick(0, 9);
     const int index = pick(engine);
     const std::string expected = omnissiah_liturgical::launch_litanies[index];
-    std::cout << "\\n[ЛИТАНИЯ ЗАПУСКА " << (index + 1) << "/10]\\n"
-              << expected << "\\n" << std::flush;
+    std::cout << "\n[ЛИТАНИЯ ЗАПУСКА " << (index + 1) << "/10]\n"
+              << expected << "\n" << std::flush;
     std::cout << "Повтори молитву дословно для запуска: " << std::flush;
     std::string spoken;
     if (!std::getline(std::cin, spoken)) {
-        std::cerr << "\\nOMNL005: молитва не введена; запуск запрещён.\\n";
+        std::cerr << "\nOMNL005: молитва не введена; запуск запрещён.\n";
         return 77;
     }
     if (spoken != expected) {
-        std::cerr << "OMNL006: искажённая молитва; запуск запрещён.\\n";
+        std::cerr << "OMNL006: искажённая молитва; запуск запрещён.\n";
         return 77;
     }
-    std::cout << "Омниссия благословляет пробуждение.\\n" << std::flush;
+    std::cout << "Омниссия благословляет пробуждение.\n" << std::flush;
     return omnissiah_liturgical::invoke(omnissiah_application_main, argc, argv);
 }
 """.replace("__PRAYERS__", prayers)
     # Include standard headers before renaming main to avoid affecting headers.
-    headers = ("#include <array>\\n#include <iostream>\\n#include <random>\\n"
-               "#include <string>\\n#include <type_traits>\\n")
-    return (headers + before + "\\n#define main omnissiah_application_main"
-            + separator + after + "\\n" + entry)
+    headers = ("#include <array>\n#include <iostream>\n#include <random>\n"
+               "#include <string>\n#include <type_traits>\n")
+    return (headers + before + "\n#define main omnissiah_application_main"
+            + separator + after + "\n" + entry)
 
 
 def emit(source: Path, dialect: str, target: Path) -> int:
