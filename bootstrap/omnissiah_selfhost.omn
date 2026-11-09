@@ -1093,6 +1093,8 @@ struct SourceNode {
     Token close;
     std::vector<SourceNode> children;
     string role;
+    string function_name;
+    string return_type;
 };
 
 class SourceParser {
@@ -1207,6 +1209,26 @@ class SourceParser {
                 string role = token.value == "{" ? brace_role(out.children) : "";
                 SourceNode child = group(token, close, depth + 1);
                 child.role = role;
+                // R05: annotate conservative simple function definitions.
+                // More complex C++ declarators remain structural and untyped.
+                if (role == "FunctionBody") {
+                    std::vector<const SourceNode*> header;
+                    for (size_t i = out.children.size(); i > 0 && header.size() < 64; --i) {
+                        const SourceNode& n = out.children[i - 1];
+                        if (n.open.kind == "ws" || n.open.kind == "comment" ||
+                            n.open.kind == "directive") continue;
+                        if (n.open.value == ";" || n.open.value == "}" || n.open.value == "{") break;
+                        header.push_back(&n);
+                    }
+                    if (header.size() >= 3) {
+                        const SourceNode& name = *header[1];
+                        const SourceNode& type = *header[2];
+                        if (name.open.kind == "identifier" && type.open.kind == "identifier") {
+                            child.function_name = name.open.value;
+                            child.return_type = type.open.value;
+                        }
+                    }
+                }
                 out.children.push_back(std::move(child));
             } else out.children.push_back(SourceNode{token.kind, token, token, {}});
         }
@@ -1247,6 +1269,10 @@ public:
     if (node.kind == "Group") {
         out += ",\"close\":" + json_quote(node.close.value);
         if (!node.role.empty()) out += ",\"role\":" + json_quote(node.role);
+        if (!node.function_name.empty()) {
+            out += ",\"function_name\":" + json_quote(node.function_name);
+            out += ",\"return_type\":" + json_quote(node.return_type);
+        }
     }
     out += ",\"children\":[";
     ЛОГИКА first = ИСТИНА;
