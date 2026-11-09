@@ -129,6 +129,26 @@ enum class Relic { One, Two };
         self.assertEqual(structured.returncode, legacy.returncode, structured.stderr)
         self.assertEqual(structured.stdout, legacy.stdout)
 
+    def test_r05_simple_function_signature_metadata(self):
+        src = self.source("""int add(int a, int b) { return a + b; }
+ЦЕЛОЕ blessed(ЦЕЛОЕ value) { ВЕРНУТЬ value; }
+auto lambda = [](int n) { return n + 1; };
+""")
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tree = json.loads(result.stdout)
+        functions = [n for n in self.walk(tree)
+                     if n.get("role") == "FunctionBody"]
+        self.assertEqual(
+            [(n.get("function_name"), n.get("return_type")) for n in functions],
+            [("add", "int"), ("blessed", "ЦЕЛОЕ")])
+        self.assertFalse(any(n.get("function_name") == "lambda"
+                             for n in self.walk(tree)))
+        legacy = self.invoke("emit", src, "--dark-age")
+        structured = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(structured.returncode, legacy.returncode, structured.stderr)
+        self.assertEqual(structured.stdout, legacy.stdout)
+
     def test_r05_control_keywords_in_comments_are_not_roles(self):
         src = self.source('''int f() /* if for while */ { return 0; }
 ''')
