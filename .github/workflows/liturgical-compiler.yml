@@ -1,0 +1,24 @@
+name: Liturgical Compiler
+on:
+  push:
+    paths:
+      - 'liturgical_compiler.py'
+      - 'liturgical_litanies.py'
+      - 'tests/test_liturgical_compiler.py'
+      - '.github/workflows/liturgical-compiler.yml'
+  pull_request:
+    paths:
+      - 'liturgical_compiler.py'
+      - 'liturgical_litanies.py'
+      - 'tests/test_liturgical_compiler.py'
+      - '.github/workflows/liturgical-compiler.yml'
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run liturgical and existing compiler regression tests
+        run: python3 -m unittest discover -s tests -v
