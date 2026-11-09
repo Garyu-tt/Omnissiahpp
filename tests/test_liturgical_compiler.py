@@ -97,7 +97,7 @@ class LiturgicalBinaryTests(unittest.TestCase):
         self.assertIn("OMNL005", result.stderr)
 
     def test_wrong_input_never_reaches_application(self):
-        result = subprocess.run([str(self.exe)], input="heresy\\n", text=True,
+        result = subprocess.run([str(self.exe)], input="heresy\n", text=True,
                                 capture_output=True, timeout=15)
         self.assertEqual(result.returncode, lc.EXIT_RITUAL_REJECTED)
         self.assertNotIn("APP-RAN", result.stdout)
@@ -114,9 +114,9 @@ class LiturgicalBinaryTests(unittest.TestCase):
                     if not heading.strip():
                         heading = proc.stdout.readline()
                     self.assertIn("ЛИТАНИЯ ЗАПУСКА", heading)
-                    prayer = proc.stdout.readline().rstrip("\\n")
+                    prayer = proc.stdout.readline().rstrip("\n")
                     self.assertIn("Омниссия", prayer)
-                    proc.stdin.write(prayer + "\\n")
+                    proc.stdin.write(prayer + "\n")
                     proc.stdin.flush()
                     proc.stdin.close()
                     output = proc.stdout.read()
