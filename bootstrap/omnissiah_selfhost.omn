@@ -1227,26 +1227,43 @@ class SourceParser {
                         if (name.open.kind == "identifier" && type.open.kind == "identifier") {
                             child.function_name = name.open.value;
                             child.return_type = type.open.value;
-                            // Annotate only simple "type name" parameters.
-                            // Complex declarators are intentionally left untyped.
+                            // Recognize conservative built-in qualified declarators.
+                            // Unsupported grammar must not produce partial metadata.
                             const SourceNode& args = *header[0];
                             if (args.kind == "Group" && args.open.value == "(") {
                                 std::vector<const SourceNode*> part;
                                 ЛОГИКА valid = ИСТИНА;
+                                auto record_parameter = [&child](const std::vector<const SourceNode*>& p) {
+                                    if (p.size() < 2 || p.back()->open.kind != "identifier")
+                                        ВЕРНУТЬ ЛОЖЬ;
+                                    size_t i = 0;
+                                    string type_name;
+                                    if (p[i]->open.value == "const" || p[i]->open.value == "ПОСТОЯННО") {
+                                        type_name = p[i++]->open.value + " ";
+                                    }
+                                    if (i >= p.size() - 1 || p[i]->open.kind != "identifier")
+                                        ВЕРНУТЬ ЛОЖЬ;
+                                    type_name += p[i++]->open.value;
+                                    if (i < p.size() - 1 && (p[i]->open.value == "*" || p[i]->open.value == "&")) {
+                                        type_name += p[i++]->open.value;
+                                        // Lexer emits && as two punctuation tokens.
+                                        if (i < p.size() - 1 && p[i - 1]->open.value == "&" &&
+                                            p[i]->open.value == "&") type_name += p[i++]->open.value;
+                                    }
+                                    if (i != p.size() - 1) ВЕРНУТЬ ЛОЖЬ;
+                                    child.parameters.push_back({type_name, p.back()->open.value});
+                                    ВЕРНУТЬ ИСТИНА;
+                                };
                                 for (const auto& item : args.children) {
                                     if (item.open.kind == "ws" || item.open.kind == "comment") continue;
                                     if (item.open.value == ",") {
-                                        if (part.size() != 2 || part[0]->open.kind != "identifier" ||
-                                            part[1]->open.kind != "identifier") { valid = ЛОЖЬ; break; }
-                                        child.parameters.push_back({part[0]->open.value, part[1]->open.value});
+                                        if (!record_parameter(part)) { valid = ЛОЖЬ; break; }
                                         part.clear();
                                     } else part.push_back(&item);
                                 }
                                 if (valid && !part.empty()) {
-                                    if (part.size() == 2 && part[0]->open.kind == "identifier" &&
-                                        part[1]->open.kind == "identifier")
-                                        child.parameters.push_back({part[0]->open.value, part[1]->open.value});
-                                    else if (!(part.size() == 1 && part[0]->open.value == "void")) valid = ЛОЖЬ;
+                                    if (!(part.size() == 1 && part[0]->open.value == "void") &&
+                                        !record_parameter(part)) valid = ЛОЖЬ;
                                 } else if (valid && !args.children.empty() && part.empty()) {
                                     valid = ЛОЖЬ; // trailing comma
                                 }

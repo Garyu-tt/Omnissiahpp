@@ -169,8 +169,38 @@ auto lambda = [](int n) { return n + 1; };
                          [{"type": "ЦЕЛОЕ", "name": "value"}])
         self.assertEqual(functions["zero"]["parameters"], [])
         self.assertEqual(functions["explicit_void"]["parameters"], [])
-        self.assertEqual(functions["complex"]["parameters"], [])
+        # Qualified references are now supported; keep this regression aligned
+        # with the expanded grammar instead of expecting an empty signature.
+        self.assertEqual(functions["complex"]["parameters"],
+                         [{"type": "const int&", "name": "value"}])
         self.assertNotIn("lambda", functions)
+        old = self.invoke("emit", src, "--dark-age")
+        new = self.invoke("source-emit", src, "--dark-age")
+        self.assertEqual(new.returncode, old.returncode, new.stderr)
+        self.assertEqual(new.stdout, old.stdout)
+
+    def test_r05_qualified_parameter_metadata_and_atomic_fallback(self):
+        src = self.source("""int refs(const int& value, int* ptr) { return value + *ptr; }
+int movable(int&& value) { return value; }
+int mixed(int a, const int& b) { return a + b; }
+int unsupported(int a, std::vector<int> values) { return a; }
+int defaults(int a = 1) { return a; }
+""")
+        result = self.invoke("source-ast", src, "--dark-age")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        functions = {n["function_name"]: n for n in self.walk(json.loads(result.stdout))
+                     if n.get("role") == "FunctionBody" and n.get("function_name")}
+        self.assertEqual(functions["refs"]["parameters"],
+                         [{"type": "const int&", "name": "value"},
+                          {"type": "int*", "name": "ptr"}])
+        self.assertEqual(functions["movable"]["parameters"],
+                         [{"type": "int&&", "name": "value"}])
+        self.assertEqual(functions["mixed"]["parameters"],
+                         [{"type": "int", "name": "a"},
+                          {"type": "const int&", "name": "b"}])
+        # Unsupported declarations never leak a partially parsed signature.
+        self.assertEqual(functions["unsupported"]["parameters"], [])
+        self.assertEqual(functions["defaults"]["parameters"], [])
         old = self.invoke("emit", src, "--dark-age")
         new = self.invoke("source-emit", src, "--dark-age")
         self.assertEqual(new.returncode, old.returncode, new.stderr)
