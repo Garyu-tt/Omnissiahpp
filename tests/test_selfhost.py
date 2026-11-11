@@ -151,6 +151,38 @@ class SelfHostingTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_core_lexical_scope_redeclarations(self):
+        invalid = [
+            "int main() { int x = 1; int x = 2; return x; }",
+            "ЦЕЛОЕ main() { ЦЕЛОЕ число = 1; ЦЕЛОЕ число = 2; ВЕРНУТЬ число; }",
+            "int x = 1; int x = 2; int main() { return x; }",
+            "int main() { for (int i = 0; i < 2; ++i) { int x = 0; int x = 1; } return 0; }",
+        ]
+        valid = [
+            "int main() { int x = 1; { int x = 2; } return x; }",
+            "int x = 1; int main() { int x = 2; return x; }",
+            "int main() { for (int i = 0; i < 2; ++i) {} for (int i = 0; i < 2; ++i) {} return 0; }",
+        ]
+        for i, source in enumerate(invalid):
+            with self.subTest(invalid=i):
+                path = self.dir / f"scope-invalid-{i}.omn"
+                path.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    [str(self.compiler), "ast", str(path), "--dark-age"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("OMN119", result.stderr)
+        for i, source in enumerate(valid):
+            with self.subTest(valid=i):
+                path = self.dir / f"scope-valid-{i}.omn"
+                path.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    [str(self.compiler), "ast", str(path), "--dark-age"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_real_three_generation_bootstrap(self):
         result = subprocess.run(["bash", str(ROOT / "scripts" / "bootstrap.sh"), str(self.dir / "stages")],
                                 capture_output=True, text=True)
